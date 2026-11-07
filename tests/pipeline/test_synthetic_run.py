@@ -36,10 +36,20 @@ CONFIG = {
 
 
 @pytest.fixture(scope="module")
-def run(tmp_path_factory, request):
+def run(tmp_path_factory):
+    return _run(tmp_path_factory.mktemp("synthetic"), {})
+
+
+@pytest.fixture(scope="module")
+def run_dropping(tmp_path_factory):
+    """Without bridging the rows break at the faint patch and dangle; drop_hanging_rows removes them."""
+    overrides = {"reconstruction": {"max_gap_m": 0.5}, "export": {"drop_hanging_rows": True}}
+    return _run(tmp_path_factory.mktemp("synthetic_drop"), overrides)
+
+
+def _run(tmp, overrides):
     from pyproj import CRS
 
-    tmp = tmp_path_factory.mktemp("synthetic")
     crs = CRS.from_epsg(3794)
     grid = synthetic_grid(crs.to_wkt())
     V = stripe_evidence(grid, half_width=0.3)
@@ -57,6 +67,7 @@ def run(tmp_path_factory, request):
     gpd.GeoDataFrame({"id": [7]}, geometry=[block], crs=crs).to_file(gpkg)
     cfg = merge(load_config(), CONFIG)
     cfg = merge(cfg, {"input": {"rgb": str(tif)}, "vineyards": {"source": str(gpkg), "id_field": "id"}})
+    cfg = merge(cfg, overrides)
     result = run_pipeline(cfg, run_dir=tmp / "run", log=lambda *_: None)
     return result, block
 
@@ -138,6 +149,33 @@ def test_blocks_shapefile_has_a_vertex_at_every_row_end(run):
     assert int(out["row_ends"].iloc[0]) == len(ends)
     for e in ends:
         assert np.min(np.hypot(*(vertices - np.array(e)).T)) < 1e-9
+
+
+def test_hanging_rows_are_kept_by_default(run):
+    result, _ = run
+    assert result.report["totals"]["drop_hanging_rows"] is False
+    assert not (result.run_dir / "shapefiles" / "removed.shp").exists()
+
+
+def test_drop_hanging_rows_keeps_only_rows_meeting_the_boundary_twice(run_dropping):
+    from tools.validation import meets_boundary_twice
+
+    result, block = run_dropping
+    totals = result.report["totals"]
+    assert totals["removed_hanging"] >= 8  # the pieces either side of the faint patch
+    assert len(result.sections) >= 20  # complete rows elsewhere are kept
+    assert totals["dangling_ends"] == 0
+    for s in result.sections:
+        assert meets_boundary_twice(s.geometry, block, 0.3)
+    removed = gpd.read_file(result.run_dir / "shapefiles" / "removed.shp")
+    assert len(removed) == totals["removed_hanging"]
+    assert (removed.dangling > 0).all() and (removed.review == 1).all()
+    kept = gpd.read_file(result.run_dir / "shapefiles" / "rows.shp")
+    assert (kept.dangling == 0).all()
+    issues = gpd.read_file(result.run_dir / "shapefiles" / "issues.shp")
+    assert "completion" not in set(issues.check)
+    blocks = gpd.read_file(result.run_dir / "shapefiles" / "blocks.shp")
+    assert int(blocks.removed.iloc[0]) == totals["removed_hanging"]
 
 
 def test_report_lists_open_choices(run):

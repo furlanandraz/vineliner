@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import shapely
+import shapely.ops
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
@@ -61,6 +62,30 @@ class SectionStats:
     @property
     def spacing_out(self) -> int:
         return self.spacing_narrow + self.spacing_wide
+
+
+def meets_boundary_twice(line, polygon, tol: float) -> bool:
+    """True when the line meets the block boundary at exactly two points: its two ends.
+
+    Both endpoints must lie within tol of the boundary, and the rest of the line
+    must not touch the boundary. This is the test behind [export] drop_hanging_rows.
+    """
+    boundary = polygon.boundary
+    coords = line.coords
+    if boundary.distance(Point(coords[0])) > tol or boundary.distance(Point(coords[-1])) > tol:
+        return False
+    if line.length <= 2 * tol:
+        return False
+    inner = shapely.ops.substring(line, tol, line.length - tol)
+    return not inner.intersects(boundary)
+
+
+def split_hanging(sections: list[RowSection], polygon, tol: float) -> tuple[list[RowSection], list[RowSection]]:
+    """(rows meeting the boundary exactly twice, all other rows)."""
+    kept, hanging = [], []
+    for s in sections:
+        (kept if meets_boundary_twice(s.geometry, polygon, tol) else hanging).append(s)
+    return kept, hanging
 
 
 def check_block(sections: list[RowSection], polygon, settings: ValidationSettings, block_id: int):

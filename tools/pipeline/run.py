@@ -46,7 +46,7 @@ from ..search import (
     select_orientation_consensus,
 )
 from ..template import KernelBank, Template
-from ..validation import CHECKS, check_block, evidence_along, mean_evidence, review_section, seed_rms
+from ..validation import CHECKS, check_block, evidence_along, mean_evidence, review_section, seed_rms, split_hanging
 from ..vineyards import block_mask, make_blocks, pixel_window
 
 
@@ -230,6 +230,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     t0 = lap("kernels", t0)
 
     all_centres, all_seeds, all_chains, all_sections, all_issues, all_reviews, all_joins = [], [], [], [], [], [], []
+    all_removed, all_removed_reviews = [], []  # hanging rows, when [export] drop_hanging_rows is on
     block_reports = []
     centre_profiles = {"centre_id": [], "theta_profile": [], "spacing_profile": []}
     next_id = {"centre": 0, "seed": 0, "chain": 0, "row": 0, "section": 0}
@@ -285,14 +286,27 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         grown = grower.run()
         sections = finalise_rows(grown, block.polygon, settings.validation.tolerance_m, first_id=next_id["section"])
         next_id["section"] += len(sections)
-        issues, stats, vsummary = check_block(sections, block.polygon, settings.validation, block.id)
         seeds_by_id = {s.id: s for s in seeds}
         along = {sec.id: evidence_along(sec, scorer) for sec in sections}
         ev_by_id = {sid: mean_evidence(ev) for sid, ev in along.items()}
-        reviews = [
-            review_section(sec, stats[sec.id], along[sec.id], seed_rms(sec, seeds_by_id), rs.growth_min_score, settings.review, ev_by_id)
-            for sec in sections
-        ]
+
+        def review_all(secs, stats_by_id):
+            ev = {s.id: ev_by_id[s.id] for s in secs}
+            return [
+                review_section(sec, stats_by_id[sec.id], along[sec.id], seed_rms(sec, seeds_by_id), rs.growth_min_score, settings.review, ev)
+                for sec in secs
+            ]
+
+        removed, removed_reviews = [], []
+        if settings.export.drop_hanging_rows:
+            # Removed rows keep the attributes they had among all rows, so it is clear why they hung.
+            _, stats_all, _ = check_block(sections, block.polygon, settings.validation, block.id)
+            sections, removed = split_hanging(sections, block.polygon, settings.validation.tolerance_m)
+            removed_reviews = review_all(removed, stats_all)
+        issues, stats, vsummary = check_block(sections, block.polygon, settings.validation, block.id)
+        reviews = review_all(sections, stats)
+        vsummary["removed_hanging"] = len(removed)
+        vsummary["removed_hanging_m"] = round(sum(s.length_m for s in removed), 1)
         vsummary["review"] = sum(r["review"] for r in reviews)
         vsummary["conf"] = {c: sum(r["conf"] == c for r in reviews) for c in ("high", "medium", "low")}
         vsummary["bridged_m"] = round(sum(sec.bridged_m for sec in sections), 1)
@@ -330,7 +344,9 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         log(
             f"  block {block.id}: {accepted}/{rows.size} centres accepted ({changed} re-oriented), {len(seeds)} seeds, {len(chains)} chains, "
             f"{len(grower.joins)} joins -> {len(sections)} rows ({vsummary['conf']['high']} high, {vsummary['conf']['medium']} medium, "
-            f"{vsummary['conf']['low']} low confidence) ({time.perf_counter() - tb:.1f} s)"
+            f"{vsummary['conf']['low']} low confidence)"
+            + (f", {len(removed)} hanging rows removed" if settings.export.drop_hanging_rows else "")
+            + f" ({time.perf_counter() - tb:.1f} s)"
         )
 
         for i in range(rows.size):
@@ -343,6 +359,8 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         all_sections += sections
         all_issues += issues
         all_reviews += reviews
+        all_removed += removed
+        all_removed_reviews += removed_reviews
         all_joins += grower.joins
     t0 = lap("blocks", t0)
 
@@ -366,10 +384,12 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     issues_layer = issue_layer(all_issues)
     bridges_layer = bridge_layer(all_sections)
     shapefiles = {"rows": row_layer, "blocks": block_layer, "issues": issues_layer, "bridges": bridges_layer}
+    if settings.export.drop_hanging_rows:
+        shapefiles["removed"] = (all_removed_reviews, [s.geometry for s in all_removed])
     gpkg_layers = dict(shapefiles) | _diagnostic_layers(all_centres, all_seeds, all_chains, all_sections, all_joins)
     written = write_outputs(run_dir, grid.crs_wkt, gpkg_layers, shapefiles, settings.export.shapefile, settings.export.geopackage)
     if settings.export.overlay:
-        write_overlay(run_dir / "overlay.png", inputs.rasters[0].data, grid, blocks, all_sections, all_reviews, all_issues)
+        write_overlay(run_dir / "overlay.png", inputs.rasters[0].data, grid, blocks, all_sections, all_reviews, all_issues, removed=all_removed)
     t0 = lap("export", t0)
     timings["total"] = round(time.perf_counter() - t_run, 3)
 
@@ -399,6 +419,9 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "length_by_conf_m": {c: round(sum(r["length_m"] for r in all_reviews if r["conf"] == c), 1) for c in ("high", "medium", "low")},
             "bridged_m": round(sum(s.bridged_m for s in all_sections), 1),
             "dangling_ends": sum(r["dangling"] for r in all_reviews),
+            "drop_hanging_rows": settings.export.drop_hanging_rows,
+            "removed_hanging": len(all_removed),
+            "removed_hanging_m": round(sum(s.length_m for s in all_removed), 1),
             "crossings": sum(1 for f in all_issues if f.check == "cross_row"),
             "issues": {c: sum(b["validation"]["issues"][c] for b in block_reports) for c in CHECKS},
         },

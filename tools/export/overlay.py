@@ -2,7 +2,7 @@
 
 Rows are coloured by confidence: green high, amber medium, red low (review).
 Bridged parts are white, dangling ends magenta squares, crossings red squares,
-block outlines blue.
+block outlines blue, removed hanging rows grey.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ COLOURS = {
     "bridge": (255, 255, 255),
     "dangling": (255, 0, 255),
     "crossing": (255, 0, 0),
+    "removed": (110, 110, 110),
 }
 
 
@@ -53,10 +54,11 @@ def _paint(image, grid: Grid, x, y, colour, size: int) -> None:
             image[r[ok], c[ok]] = colour
 
 
-def write_overlay(path: str | Path, rgb: np.ndarray, grid: Grid, blocks, sections, reviews, issues) -> Path:
-    """rgb: (3, rows, cols) uint8."""
+def write_overlay(path: str | Path, rgb: np.ndarray, grid: Grid, blocks, sections, reviews, issues, removed=()) -> Path:
+    """rgb: (3, rows, cols) uint8. removed: hanging rows dropped by [export] drop_hanging_rows (grey)."""
     image = np.ascontiguousarray(np.moveaxis(rgb, 0, -1)).copy()
     draw_lines(image, grid, [b.polygon.boundary for b in blocks], COLOURS["block"])
+    draw_lines(image, grid, [s.geometry for s in removed], COLOURS["removed"])
     conf = {r["id"]: r["conf"] for r in reviews}
     for level in ("high", "medium", "low"):
         draw_lines(image, grid, [s.geometry for s in sections if conf.get(s.id) == level], COLOURS[level])

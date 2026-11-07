@@ -376,6 +376,7 @@ Also compare representative results against manually inspected or annotated imag
 | Minimum curvature radius | Approximate 5–10 m scope assumption |
 | Export | `shapefiles/`: rows with review attributes, blocks with row-end vertices, issues, bridges; GeoPackage copy with diagnostics (§13) |
 | Checks | Reported as attributes and issue points, never enforced; `[review]` thresholds set the review flag (§11) |
+| Hanging rows | Kept by default; `[export] drop_hanging_rows = true` keeps only rows meeting the boundary exactly at their two ends (§17 item 22) |
 
 Do not confuse spacing-search tolerance around d0 with the final geometric validation range; record both separately.
 
@@ -591,6 +592,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 19. **Bridge gaps** (user). In faint patches, growth continues straight along the row's direction over the last `bridge_tangent_m` (Bordeaux 10 m), for up to `max_gap_m` (Bordeaux 50 m). Every segment records whether it had image support. Bridged parts are reported per row (`bridged_m`, `bridge_pct`) and exported as `bridges.shp`.
 20. **Polygon output with row vertices** (user). `blocks.shp` keeps each supplied polygon's shape and attributes and inserts a vertex wherever a row meets its boundary. Row ends within the boundary tolerance are snapped onto the boundary first: extended along the row when they stop just short, otherwise projected. Row ends and polygon vertices are then identical coordinates.
 21. **Reference rows deferred** (user). Accuracy against hand-digitised rows (§11) waits until the user has reviewed the outputs.
+22. **Optional removal of hanging rows** (user; `[export] drop_hanging_rows`, default `false`). When on, a row is kept only if it meets its block boundary at exactly two points, its two ends: both ends within the validation tolerance of the boundary, and no other contact. All other rows are removed before the checks, so the kept rows' attributes describe the cleaned set. The removed rows are written to `removed.shp` with the attributes they had among all rows. This is for poor imagery: keep only probably-accurate rows and add the rest by hand.
 
 ## 18. First Bordeaux results (2026-11-07)
 

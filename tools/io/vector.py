@@ -40,16 +40,36 @@ def read_polygons(path: str | Path, layer: str | None, id_field: str | None, tar
     return ids, list(gdf.geometry), provenance, records
 
 
-def write_layer(path: str | Path, records: list[dict], geometries: list, crs_wkt: str, layer: str | None = None, driver: str = "GPKG") -> Path:
-    """Write one layer. Shapefile field names must already be 10 characters or fewer."""
+def write_layer(
+    path: str | Path,
+    records: list[dict],
+    geometries: list,
+    crs_wkt: str,
+    layer: str | None = None,
+    driver: str = "GPKG",
+    fields: tuple[str, ...] | None = None,
+    geometry_type: str | None = None,
+) -> Path:
+    """Write one layer. Shapefile field names must already be 10 characters or fewer.
+
+    An empty layer needs fields and geometry_type, so the file still exists
+    with its attribute table and the set of outputs stays the same.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=CRS.from_wkt(crs_wkt))
+    crs = CRS.from_wkt(crs_wkt)
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
+    else:
+        if fields is None or geometry_type is None:
+            raise ValueError("an empty layer needs fields and geometry_type")
+        gdf = gpd.GeoDataFrame({f: [] for f in fields}, geometry=gpd.GeoSeries([], crs=crs))
+    extra = {"geometry_type": geometry_type} if not records else {}
     if driver == "ESRI Shapefile":
         too_long = [c for c in gdf.columns if c != "geometry" and len(c) > 10]
         if too_long:
             raise ValueError(f"shapefile field names longer than 10 characters: {too_long}")
-        gdf.to_file(path, driver=driver)
+        gdf.to_file(path, driver=driver, **extra)
     else:
-        gdf.to_file(path, layer=layer, driver=driver)
+        gdf.to_file(path, layer=layer, driver=driver, **extra)
     return path

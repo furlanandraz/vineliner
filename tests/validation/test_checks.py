@@ -111,6 +111,22 @@ def test_attribute_names_fit_a_shapefile():
     assert all(len(k) <= 10 for k in rec)
 
 
+def test_meets_boundary_twice():
+    from tools.validation import meets_boundary_twice, split_hanging
+
+    complete = LineString([(0, 5), (20, 5)])
+    dangling = LineString([(0, 5), (12, 5)])
+    floating = LineString([(4, 5), (12, 5)])
+    touching = LineString([(0, 2), (10, 0), (20, 2)])  # touches the boundary mid-way: three points
+    along_edge = LineString([(0, 0), (20, 0)])  # runs along the boundary
+    assert meets_boundary_twice(complete, POLY, 0.05)
+    for line in (dangling, floating, touching, along_edge):
+        assert not meets_boundary_twice(line, POLY, 0.05)
+    rows = [section(i, list(g.coords)) for i, g in enumerate((complete, dangling, touching))]
+    kept, hanging = split_hanging(rows, POLY, 0.05)
+    assert [s.id for s in kept] == [0] and [s.id for s in hanging] == [1, 2]
+
+
 def test_empty_result_is_flagged():
     _, _, summary = check_block([], POLY, SETTINGS, 0)
     assert summary["empty"] is True

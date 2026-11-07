@@ -155,6 +155,7 @@ class ExportSettings:
     shapefile: bool
     geopackage: bool
     overlay: bool
+    drop_hanging_rows: bool = False  # keep only rows meeting their block boundary at exactly their two ends
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,7 @@ class RunSettings:
         review = {k: r.get("review", k, kind=float) for k in review_keys}
         surfaces = r.get("storage", "surfaces", choices=SURFACE_STORAGE)
         export = [r.get("export", k, True, kind=bool) for k in ("shapefile", "geopackage", "overlay")]
+        export.append(r.get("export", "drop_hanging_rows", False, kind=bool))
 
         r.raise_if_failed()
 

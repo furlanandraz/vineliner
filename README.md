@@ -34,6 +34,9 @@ A full Bordeaux run (7 blocks, about 7,900 search centres) takes about 7 minutes
 | `blocks.shp` | The supplied block polygons, same shape and attributes, with a vertex inserted wherever a row meets the boundary. Row ends snap exactly to these vertices. Adds `block`, `rows`, `review`, `row_ends`, `length_m`, `theta_deg`, `spacing_m` |
 | `issues.shp` | Points where a check found something: `check` = completion (dangling end), cross_row, spacing (narrow/wide), containment, self_intersection |
 | `bridges.shp` | Parts of rows drawn without image support, where a row was carried straight through a faint patch |
+| `removed.shp` | Only with `drop_hanging_rows = true`: the removed hanging rows, with the same attributes as `rows.shp`. A reference for adding the missing rows by hand |
+
+Every review layer is written even when it's empty, so the set of files stays the same between runs.
 
 **Other outputs**
 
@@ -65,6 +68,19 @@ Checks never remove or fail a row. They are reported, so a person can decide.
 | `pos_rms_m` | RMS distance of the row's seed detections from the final line, a measure of positional consistency |
 | `theta_deg`, `spacing_m`, `length_m` | Mean direction, template spacing, length |
 | `n_seeds`, `n_joins`, `row_id`, `block`, `id` | Provenance |
+
+### Keeping only complete rows
+
+If the imagery is poor, set this in the area's config:
+
+```toml
+[export]
+drop_hanging_rows = true
+```
+
+Then `rows.shp` keeps only rows that meet their block boundary at exactly two points: their two ends. Rows with a dangling end, and rows that touch the boundary anywhere else, are removed. The checks and attributes are then computed on the kept rows only. The removed rows go to `removed.shp`, so you can add the missing rows by hand in QGIS. The default, `false`, keeps every row.
+
+### When a row is flagged
 
 A row gets `review = 1` when:
 - it has a dangling end, crosses another row, crosses itself, or leaves its block, or

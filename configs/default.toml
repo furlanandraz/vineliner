@@ -122,4 +122,8 @@ min_length_m = 4.0              # shorter rows are flagged
 [export]                        # §13
 shapefile = true
 geopackage = true               # optional convenience copy with every layer
-overlay = true                  # PNG of imagery, blocks, seeds, rows and failures
+overlay = true                  # PNG of imagery, blocks, rows by confidence, bridges and issues
+drop_hanging_rows = false       # true: keep only rows that meet their block boundary at exactly two
+                                # points, their two ends. Dangling rows and rows touching the boundary
+                                # elsewhere are removed before the checks and written to removed.shp
+                                # instead, for adding missing rows by hand. false: keep every row.
