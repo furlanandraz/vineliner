@@ -1,0 +1,700 @@
+# Vineliner — design brief for Claude Code
+
+Date: 2026-11-06, revised 2026-11-07 (see §17)  
+Status: agreed direction for an initial experiment. A first implementation of the full pipeline exists (2026-11-07, §13, §18); its results are experimental.  
+Preferred language: Python.  
+Target imagery: Slovenian GURS orthophotos. First test data on hand: a 0.20 m Bordeaux RGB + NIR pair in `dof/bordeaux/` (§14).
+
+## 1. Purpose and scope
+
+Vineliner will analyse aerial raster imagery to identify vineyard areas, distinguish vine-row evidence from the background, and reconstruct individual vine rows as georeferenced vector polylines.
+
+The intended end-to-end sequence is:
+
+1. Read georeferenced RGB imagery, optionally supplemented by NIR.
+2. Classify vineyard areas and produce separate vector vineyard polygons.
+3. Produce an image-derived raster expressing evidence of vine rows inside those polygons.
+4. Search for short, approximately parallel row segments using a weighted five-line template.
+5. Combine local detections and reconstruct complete, potentially curved rows.
+6. Validate geometry and export row vectors, scores, configuration and diagnostics.
+
+This document records the discussion and its working decisions. It does not claim that the method has already been validated. Keep empirical defaults configurable. Do not replace the agreed exhaustive two-dimensional translation search with a one-dimensional phase search without an explicit later decision.
+
+## 2. Working assumptions and accepted limitations
+
+- The first target is row-trained vineyards, initially in Coastal Slovenia.
+- Within a classified vineyard, the desired final classes are vine row and background. Background can include soil, grass and other non-vine features; binary output does not imply only two physical materials exist.
+- RGB alone is an acceptable starting point. NIR is optional, and its contribution must be tested.
+- The user considers July particularly favourable locally: developed vine canopy, dry/yellow inter-row grass and high sun. Prefer acquisition near solar noon when suitable imagery is available. This is a regional acquisition preference, not a claim that every July image is optimal.
+- March and October imagery can be harder to interpret and are not the preferred initial cases.
+- Intended product positional accuracy is approximately 1 m. This is a design target, not an empirically demonstrated accuracy rating.
+- Canopy and shadow may both supply row evidence. Their positional displacement is an accepted limitation to disclose; dedicated shadow correction is not a requirement of the first experiment.
+- Typical target row spacing is approximately 1.5–2.5 m; default expected spacing is 2.0 m. These are configurable scope assumptions, not universal viticultural rules.
+- Rows within the same planting block should not cross.
+- Rows may curve, including changing curvature while following terrain. The user's initial minimum curvature-radius assumption is approximately 5–10 m.
+- Dense sampling is deliberately acceptable overhead. The initial priority is investigating behaviour and preserving evidence, rather than prematurely reducing the search.
+- No UI, production infrastructure or deployment architecture has been specified.
+
+## 3. Input and coordinate requirements
+
+Use genuine georeferenced imagery, normally GeoTIFF. The Google Earth screenshot used during discussion was illustrative only and has no usable georeferencing supplied.
+
+Read and retain:
+
+- Coordinate reference system (CRS).
+- Raster affine transform, pixel dimensions and spatial bounds.
+- Band count, band descriptions/order, numeric type and value ranges.
+- NoData/valid-data mask.
+- Source product, tile identifier and capture date when supplied by the provider. A catalogue/update date is not necessarily the capture date.
+
+Perform distances, rotations, spacing and growth in a projected coordinate system with metre units. For GURS D96/TM data, the expected CRS is EPSG:3794; inspect the actual file rather than silently assigning that CRS. If another CRS is supplied, transform correctly before metric operations. Assigning a CRS label is not reprojection.
+
+Preserve the spatial transform when cropping or generating intermediate rasters. Any resampling must be explicit and recorded.
+
+The analysis raster's pixel size (ground sampling distance) also sets the translation search increment (§7). The search does not test sub-pixel phases: the imagery holds no finer detail, and a template rasterised onto the pixel grid (§6.1) cannot represent them. Resampling to a finer grid adds no detail and must not be used to make the phase search finer.
+
+The first version expects a north-up analysis raster: an affine transform with no rotation or shear terms. Reject other transforms, or resample explicitly to north-up and record it.
+
+If RGB and NIR are combined, align them spatially and document the resampling and band mapping. GURS DOF050IR is a false-colour IR/R/G product, not an ordinary RGB file with a fourth NIR band. Do not infer band semantics solely from array position.
+
+## 4. Vineyard polygons and block separation
+
+Vineyard classification is the first intended processing stage. Its result defines the permitted processing area and separates planting blocks that may have different row orientations.
+
+The example screenshot contains four vineyards with two main orientation families, separated by roads. Do not impose one global orientation across all four blocks.
+
+Apply each vineyard polygon to image scoring and row growth. Imagery outside the polygon must not contribute as support for that block. Final vector clipping provides the final boundary geometry.
+
+For isolated row-extraction experiments, an externally supplied or manually outlined vineyard polygon can be used as a test fixture. That does not constitute implementation or validation of automatic vineyard classification. Retain the distinction in reports.
+
+## 5. Raster preprocessing and row evidence
+
+The initial baseline to investigate is RGB converted to grayscale, with contrast enhancement and/or thresholding. In favourable summer imagery, repeated darker canopy/shadow bands may already be sufficient to reveal rows.
+
+Keep the method configurable. Candidate approaches discussed include:
+
+- Grayscale with global or local contrast enhancement.
+- Grayscale thresholding.
+- RGB-derived vegetation/colour features.
+- Edge or ridge filters and texture features.
+- NIR-derived features or a custom RGB/NIR combination.
+- Rotated matched filters or Gabor filters as comparisons to the explicit template.
+
+No particular filter, threshold or RGB/NIR weighting has been selected. A vegetation index alone should not be assumed to distinguish grass from grapevine.
+
+Prefer retaining a continuous row-evidence raster V in [0,1] for scoring and diagnostics. Binary thresholded imagery can be a configurable experiment. Define polarity explicitly: high V must mean stronger row evidence, even if the original rows are dark in grayscale.
+
+**Implemented** (`tools/imagery/evidence.py`, `[evidence]`). V mixes up to two components, each a raw response scaled to [0,1]:
+
+    V = (1 - ndvi_weight) * V_gray + ndvi_weight * V_ndvi
+
+- **Gray component** (mean of the configured bands).
+  - `black_tophat`: closing(gray) − gray with a square window. Keeps narrow dark rows, removes broad soil-brightness changes. 0 maps to 0 and the `scale_percentile` maps to 1.
+  - `gray_stretch`: inverted gray between two percentiles.
+- **NDVI component** (optional `[input] ndvi` raster; vines are greener than soil).
+  - `white_tophat`: ndvi − opening(ndvi). Narrow green features.
+  - `stretch`: ndvi between two percentiles.
+- **Scaling region** (`scale_region`, open): `per_block` scales each block on its own statistics; `all_blocks` uses one scale for every block.
+- Invalid pixels are replaced by the median valid value before filtering, so they cannot leak into neighbours, and V is 0 there.
+- `ndvi_weight = 0` (the default) is the RGB-only baseline. NDVI's contribution is tested in §18.
+
+The downscaled fingerprint analogy is useful for recognising vineyard texture. Coarse-scale classification must still preserve the finer imagery needed for row placement. No fixed downsampling factor has been selected.
+
+Height data remain a possible later input. If needed, investigate photogrammetric surface/terrain products from overlapping photographs and/or LiDAR. A height-above-ground cue requires an appropriate terrain reference; raw elevation alone includes the hillside. Neither LiDAR nor height processing is required for the initial RGB experiment.
+
+## 6. Five-line template
+
+Each template contains five short parallel line segments or bands:
+
+| Relative position | Index | Weight |
+| --- | ---: | ---: |
+| Outer left | -2 | 0.05 |
+| Inner left | -1 | 0.20 |
+| Centre | 0 | 0.50 |
+| Inner right | +1 | 0.20 |
+| Outer right | +2 | 0.05 |
+
+The weights sum to 1.00. The later mention of 0.10 for each outer line was clarified back to 0.05; do not accidentally create a total weight of 1.10.
+
+- Expected row spacing d0 defaults to 2.0 m.
+- Spacing d is centre-to-centre separation of neighbouring template lines, measured perpendicular to their direction.
+- "Row width" means this spacing: the distance between neighbouring rows, where the tractors drive. A vine row itself has no width in this method because it is reduced to a line.
+- Template line length L should be configurable. Discussed choices are 1.0 m, 2.0 m, or L equal to the expected row spacing, e.g. 2.2 m. No final choice has been made.
+- Band width w is distinct from row spacing and line length. It is the sampling width of each template line's kernel (§6.1), not a physical row width. The appropriate width/soft profile remains an empirical parameter.
+- At d = 2.2 m, the outer line centres are 8.8 m apart, even when L is only 1 m. Short length does not make the entire template footprint small.
+- One spacing hypothesis uses a common d for all five lines. It does not independently move each neighbouring row. Centre-heavy weights make outer-row mismatches less influential.
+
+For an explicit coordinate convention, use projected easting/northing and let theta be counterclockwise from the positive easting axis. Then u = (cos(theta), sin(theta)) is the along-row direction and n = (-sin(theta), cos(theta)) the across-row direction. Angles are axial: theta and theta + 180 degrees describe the same row orientation. The exact software convention must be recorded and used consistently.
+
+For grid centre p and translation Delta, a point on template line k is:
+
+    q(k,t) = p + Delta + k*d*n + t*u,  with -L/2 <= t <= L/2.
+
+The image is sampled by rasterising the template onto the analysis raster grid, as specified in §6.1. Band width and the coverage method stay configurable and must be recorded.
+
+### 6.1 Template rasterisation and overlap
+
+The template is vector geometry and the row evidence V is a raster. Their overlap is computed by rasterising each template band onto the analysis raster's own pixel grid, then reading V through the resulting weight array (kernel). Do not overlay vector geometry on the raster once per hypothesis.
+
+Zonal-statistics tools that overlay polygons on rasters do exist. For example, rasterstats computes zonal statistics and exactextract computes exact per-pixel polygon coverage. Calling them once per hypothesis, hundreds of thousands of times per search-box centre, is impractical. Use one of them only as an independent check of the kernel rasteriser in tests.
+
+**Kernel construction**
+
+- Each band k is a rectangle: the template line segment of length L, buffered by w/2 on both sides across the row, with flat ends. Rasterisation needs a non-zero band width w. The initial default is one pixel; w remains an empirical parameter (§12, §15).
+- Kernels depend only on (theta, d, k, L, w), not on location. Build them once per run, on a local grid with the analysis raster's pixel size and axes and the template centre on a pixel centre, and cache them. The default search needs 180 × 21 × 5 = 18,900 small kernels.
+- Kernel value K_k(x) in [0,1] is the fraction of pixel x covered by band k. Default: fractional coverage computed exactly by polygon–pixel clipping (Shapely; `coverage = "exact"`). s × s sub-pixel sampling (`"sampled"`, record s) is the alternative; tests check the two against each other and against a pixel-by-pixel Shapely clip. Binary rasterisation (pixel centre inside, or all-touched) is a configurable comparison only. At 0.20 m pixels and 0.02 m spacing steps, the outer bands move 0.04 m per spacing step. Binary masks of neighbouring spacing hypotheses are then often identical, so those hypotheses would not be distinct.
+- Array row indices increase southward, so the northing components of u and n change sign in array coordinates. Implement the world↔array conversion once, in one place, and test it.
+- Store kernel provenance (theta, d, L, w, coverage method, s) with the scores.
+
+**Band means**
+
+With c the search-box centre pixel, Δ a translation in whole pixels (§7), and M the validity mask (inside the block polygon and not NoData; §8):
+
+    m_k(Δ)        = Σ_x K_k(x) · M(c+Δ+x) · V(c+Δ+x)  /  Σ_x K_k(x) · M(c+Δ+x)
+    coverage_k(Δ) = Σ_x K_k(x) · M(c+Δ+x)  /  Σ_x K_k(x)
+
+Because every translation is a whole-pixel shift, all translations reuse the same kernel. For one (theta, d, k), the full translation surface is the cross-correlation of M·V and of M with K_k over the search window. scipy.ndimage.correlate or an FFT correlation computes it in one call. Its results must equal the direct sums within floating-point tolerance, and it still evaluates every hypothesis (§7).
+
+The denominator above renormalises over valid pixels. Whether to keep that, or keep the full kernel weight, is still the open border-case choice from §8. Store coverage_k either way.
+
+## 7. Exhaustive local search
+
+Keep three separate concepts explicit:
+
+1. Search-box centre spacing: distance between coarse/local analysis locations across a vineyard.
+2. Translation increment: distance between hypotheses inside each local search box.
+3. Raster pixel size: physical footprint of source pixels.
+
+The translation increment is derived from the raster pixel size: it equals the pixel size on each axis (2026-11-07 decision, §17). It is not a free user parameter. Search-box centre spacing stays independent of both.
+
+### Search-box centres
+
+Choose sufficient centres over each vineyard polygon. Surface area informs the count, but spacing also needs to support local curvature and reconstruction. The user deliberately favours close centres to reduce unsupported gaps. No numeric centre spacing has been fixed.
+
+Place centres on pixel centres of the analysis raster, so that the template centre coincides with the kernel centre (§6.1).
+
+### Translation/phase grid
+
+- Search both horizontal axes, not only the across-row axis.
+- The conceptual search box is d by d in metres. The original worked example used (0,0) through (2.2,2.2).
+- Prefer a centred representation, approximately [-d/2,d/2) on both axes, with deterministic centre-outward traversal.
+- The translation increment equals the analysis raster's pixel size on each axis, read from its affine transform. Examples: 0.20 m for the Bordeaux test data, 0.25 m for DOF025, 0.50 m for DOF050. This replaces the earlier 0.10 m default. Every translation is therefore a whole-pixel shift of the rasterised template (§6.1).
+- Evaluate all translation hypotheses. Centre-outward traversal is an ordering preference, not permission to stop after the first good match.
+- Record whether the square follows the tested d or stays fixed at nominal d0. Following each tested d is the natural interpretation of the row-spacing-sized box; fixed nominal size is useful for reproducing the original arithmetic. Do not silently switch conventions.
+- Endpoints and rounding: with box side s (the tested d or nominal d0) and pixel size p on one axis, the offsets are i·p for every integer i with -s/2 <= i·p < s/2, that is i = ceil(-s/(2p)) … ceil(s/(2p)) - 1. Compute in pixel units with a small tolerance (1e-9) so floating-point error cannot add or drop an offset. Example: s = 2.0 m, p = 0.20 m gives i = -5 … 4, ten offsets from -1.00 m to +0.80 m. Half-open bounds define the finite search grid; do not assume a finite centre-weighted template is periodic in both world axes.
+
+### Rotation
+
+Search theta = 0, 1, ..., 179 degrees: 180 options at a 1-degree increment.
+
+### Spacing variation
+
+Spacing (row width, §6) hypotheses come from a predetermined, user-configured range: d_min, d_max and step, fixed before the run. The range is not adapted to the image during a run. Both endpoints are included:
+
+    d = d_min + j * step,  j = 0, 1, ..., round((d_max - d_min) / step)
+
+The range is set in the `[spacing]` table of the run configuration as `min_m`, `max_m` and `step_m`, normally in a per-area file merged over `configs/default.toml`. `vineliner.config.SpacingRange` builds the list. It refuses a range where d_max - d_min is not a whole number of steps (tolerance 1e-6 steps), so d_max is never silently dropped.
+
+The default reproduces the earlier rule of d0 ±10% at 1% of d0. For d0 = 2.0 m that is 1.80, 1.82, …, 2.20 m: 21 options. For the earlier worked example d0 = 2.2 m it is 1.98 through 2.42 m at 0.022 m steps.
+
+Set the range for the target vineyards. The Bordeaux test data appears to have rows about 1.3–1.5 m apart (§14), outside the 2.0 m default range. `configs/bordeaux.toml` therefore searches 1.20–1.60 m at 0.02 m, again 21 options. This search range is separate from the final geometric validation range (§11, §12).
+
+### Search size and retained evidence
+
+Per search-box centre, the hypothesis count is translations per spacing × 180 rotations × spacing options. Compute it from the actual configuration. With the default 21 spacing options:
+
+| Pixel size | Translation box | Offsets per axis | Translations | Template scores per centre |
+| --- | --- | ---: | ---: | ---: |
+| 0.20 m (Bordeaux test data) | fixed 2.0 m | 10 | 100 | 378,000 |
+| 0.20 m | fixed 2.2 m | 11 | 121 | 457,380 |
+| 0.20 m | tracks tested d (1.80–2.20 m) | 9–11 | varies | 381,600 |
+| 0.25 m (DOF025) | fixed 2.2 m | 9 | 81 | 306,180 |
+| 0.50 m (DOF050) | fixed 2.2 m | 5 | 25 | 94,500 |
+| 0.10 m (superseded default) | fixed 2.2 m | 22 | 484 | 1,829,520 |
+
+The last row reproduces the original arithmetic for the earlier 0.10 m increment.
+
+At one analysis location the score tensor has four search axes:
+
+    S[delta_x, delta_y, orientation, spacing]
+
+Adding the grid-centre index adds a further dimension. If phase counts vary by spacing, storage may be grouped per spacing or use explicit hypothesis records instead of a rectangular tensor.
+
+The user wants all phase scores available. Preserve full local score surfaces, with configuration and coordinate mapping, rather than only the winning hypothesis. Storage format, chunking and whether every surface must remain permanently available are not yet selected. Vectorisation, batching, correlation or parallel computation are possible optimisations only if they preserve the requested hypothesis set and scoring semantics.
+
+## 8. Scoring and acceptance threshold
+
+Let m_k be the mean row evidence in template band k, computed through the rasterised kernel K_k (§6.1). For fully valid template support, the initial base score is:
+
+    S = 0.50*m_0
+      + 0.20*m_-1 + 0.20*m_+1
+      + 0.05*m_-2 + 0.05*m_+2
+
+Each m_k is in [0,1]. Means, rather than raw sums, make scores comparable across sample counts when coverage is otherwise comparable.
+
+Accept a candidate when S >= 0.50; discard S < 0.50. The threshold is tentative and must be tuned from results.
+
+The user explicitly accepts the following equal totals:
+
+- Perfect central response, no neighbouring response: S = 0.50.
+- No central response, perfect response in all four neighbouring bands: S = 0.50.
+
+Do not require a separate central-response minimum in the first baseline. Neighbouring rows may supply the support for a faint central row. Retain individual m_k values to make the result inspectable.
+
+Call this an overlap/matching score. It is not a calibrated probability of positional correctness.
+
+A row-versus-inter-row contrast term was proposed to reject uniformly strong patches. It is an optional comparison, not an agreed subtraction from the base score. Subtracting a penalty changes the acceptance examples above; if explored, retain the base score and the additional term separately and record the decision.
+
+Outside-polygon and NoData samples must not contribute external image support. Coverage normalisation, minimum valid coverage and whether unavailable bands retain or renormalise their weights remain open border-case choices. Resolve these explicitly before interpreting boundary scores; do not quietly reinterpret missing pixels as observed soil.
+
+## 9. Directional persistence across translations
+
+The two-axis translation search is intentionally retained because along-row motion can test whether a good match persists over adjacent sections.
+
+For each theta and d, inspect the translation surface S(delta_x, delta_y | theta,d):
+
+- Correct alignment may produce an elongated region/ridge of good scores along the row direction.
+- Across-row translation should eventually move the template off the rows.
+- For a row direction of 24 degrees, the corresponding along-row translation also follows 24 degrees; strictly eastward translation includes an across-row component.
+- A high isolated maximum and a spatially persistent high-score region convey different information.
+- Adjacent phases reuse many pixels, so persistence is supporting consistency, not independent probability evidence.
+- A uniformly high surface in all directions is ambiguous.
+
+Keep local maxima, competing orientations and diagnostics. The exact persistence statistic, its weight and tie-breaking rule have not been fixed. Do not silently make persistence a new rejection threshold.
+
+Implemented diagnostics (`tools/search/persistence.py`), stored per centre and never used to reject:
+
+- Mean S along the row-direction line and along the across-row line through the winning translation, plus the box mean, minimum and maximum.
+- The strongest competing orientation: another local maximum of the per-rotation best score that reaches accept_min at least 10° from the winner.
+
+**Peak selection** (`[selection] method`, open, §15) decides which scored hypothesis a centre reports and seeds from. It does not remove hypotheses from the search.
+
+- `best` reports the unconstrained winner.
+- `orientation_consensus` reports the best hypothesis within a window of the local consensus direction. The consensus is the score-weighted axial mean of the unconstrained winners of accepted centres within a radius.
+- The unconstrained winner is always reported too, as `raw_*` fields.
+
+## 10. Row reconstruction
+
+The user's proposed mechanism is to lock accepted local line samples, extend free ends in both directions in universal increments (initially 1 m), crop at intersections, mark connections and repeat.
+
+Working refinements discussed for making that mechanism well defined:
+
+1. Select useful accepted local hypotheses and consolidate duplicate samples representing the same physical row. Passing the score threshold does not make every phase/rotation a separate output row.
+2. Establish seed segments and preserve their evidence/provenance. Neighbouring templates may repeatedly describe the same row.
+3. Grow free endpoints in steps of up to 1 m.
+4. Update direction using local detections/orientation and image support as the row bends. Short local straight samples do not justify extending the original tangent indefinitely. At radius 5 m, a 1 m arc changes tangent direction by about 11.5 degrees.
+5. Treat intersection, overlap or nearby compatible endpoints as potential joins. Check tangent consistency and row identity before accepting the join. Slightly offset fragments need not geometrically intersect exactly.
+6. Snap/trim accepted joins to shared geometry and merge compatible fragments.
+7. Stop at the vineyard boundary. Define terminal outcomes for unsupported continuation, conflicts and exhausted limits, so growth cannot run forever waiting for every line to connect.
+8. Clip and merge final geometry, split disconnected in-polygon sections, and validate.
+
+The user considers denser analysis-centre placement the primary practical mitigation for connecting the wrong rows, and accepts the additional computation. Keep this parameter tunable.
+
+Represent state per endpoint, for example active, joined, boundary, unsupported or conflict. A whole-line connected flag can be derived, but one flag cannot describe both ends during growth. Terminate when no active endpoints remain; legitimate boundary endpoints need not join another row.
+
+Maximum unsupported gap, join/snap tolerances, curvature/turning limits, tie resolution, growth-score policy and duplicate suppression are not yet empirically selected. Do not force a connection merely to satisfy completion checks.
+
+### First implementation (2026-11-07, `tools/reconstruction/`)
+
+Every threshold named here is an `[reconstruction]` or `[seeds]` config key and is open (§15).
+
+1. **Seeds.** An accepted centre yields one seed per configured template line k (`[seeds] lines`). The line's band must be available, and its own band mean m_k must reach `min_band_mean`.
+2. **Chains (duplicate consolidation).** Seeds are linked when their directions differ by at most `link_angle_deg`, and they sit at most `link_lateral_frac` × d apart across the row and at most `link_along_m` apart along it. Each connected component becomes a chain. Seed midpoints are averaged in 1 m bins along the chain's mean direction, weighted by score. Optionally the across-row position is then smoothed over `chain_smoothing_m`.
+3. **Growth.** In rounds, each active endpoint takes one `growth_step_m` step.
+   - Candidate turns are every whole degree up to step / `min_curvature_radius_m` radians (11° at 1 m and 5 m).
+   - Each candidate is scored with the same five-line template and kernels as the search.
+   - The best score wins if it reaches `growth_min_score`. Otherwise the step goes straight on, unsupported.
+4. **Joins.** A free end of another row that lies within `link_lateral_frac` × d to the side of the growth line, at most `join_distance_frac` × d beyond the step, and facing back within `join_angle_deg`, is joined, and the rows merge.
+5. **Terminal states.**
+   - *conflict:* the step crosses another row or lands on its line.
+   - *boundary:* the step leaves the polygon, and is cut at the boundary.
+   - *unsupported:* more than `max_gap_m` of unsupported steps; the unsupported tail is removed.
+   - *limit:* `max_row_length_m` grown.
+   Growth always terminates.
+6. **Sections.** Rows are clipped to the block polygon and split into connected sections. An endpoint within the validation tolerance of the boundary is *boundary*; any other endpoint keeps its growth state.
+
+## 11. Geometry validation suite
+
+Run these checks on final merged/clipped row sections, not individual short seed samples.
+
+| Check | Failure condition |
+| --- | --- |
+| Self-intersection | A row section crosses itself. |
+| Cross-row intersection | Distinct final rows cross or overlap. Shared vertices inside one merged row are normal. |
+| Spacing | Local perpendicular separation of neighbouring rows is outside the configured allowable range. |
+| Containment | A final row section extends outside its classified vineyard polygon. |
+| Completion | Either endpoint of a final continuous row section is left hanging inside the polygon. |
+
+The user's key completion rule is: every final continuous row section should meet the classified vineyard boundary at both ends. Express this as two endpoints on the boundary with the line interior contained in the polygon, using an explicit numerical tolerance. Counting any two arbitrary boundary intersections is insufficient.
+
+For holes or concave polygons where a row exits and re-enters, split the result into connected in-polygon sections and apply the endpoint rule to each section.
+
+Spacing checks must use local row normals and actual neighbour relationships, rather than horizontal/vertical coordinate differences. Boundary/headland situations and configured tolerances need explicit treatment.
+
+A failed check flags an invalid/incomplete reconstruction for review. These are geometry-consistency checks, not proof of image correctness: missing entire rows can pass them, and an empty output is not a successful extraction.
+
+**Reported, never enforced** (user decision, 2026-11-07). No row is rejected for failing a check. Each check is reported in two places:
+- As attributes on the row: dangling ends, crossings, the share of spacing samples outside the range, the measured spacing, and length outside the block.
+- As a located point in an issues layer.
+
+Measurements of support are added alongside:
+- bridged length;
+- template score along the line, sampled every 1 m;
+- RMS distance of the seed detections from the line.
+
+A `review` flag and a `conf` class (high / medium / low) then mark the rows a person should check. The `[review]` thresholds set the flag. They only label rows, so being too strict would bury the uncertain rows among false alarms. The validation spacing range for Bordeaux, 1.2–1.6 m, is confirmed by the user.
+
+Also compare representative results against manually inspected or annotated imagery. Useful empirical measures include missed/extra rows, positional deviation, fragmentation, incorrect joins, endpoint failures and execution/storage cost. The ~1 m accuracy target needs a defined evaluation metric before being published as a rating.
+
+## 12. Configuration summary
+
+| Parameter | Working value or status |
+| --- | --- |
+| Language | Python |
+| Image source | GURS orthophotos; RGB first, NIR optional. First test data: Bordeaux 0.20 m (§14) |
+| Preferred season | July/dry summer in Coastal Slovenia; near solar noon preferred |
+| Target positional accuracy | Approximately 1 m; unvalidated |
+| Expected row spacing | 2.0 m default |
+| Typical allowable spacing range | 1.5–2.5 m; configurable for the target vineyard |
+| Spacing (row width) search | Predetermined range d_min–d_max with step, inclusive, set in `[spacing]` of the run config. Default 1.80–2.20 m at 0.02 m (d0 ±10% at 1%): 21 options. Bordeaux: 1.20–1.60 m at 0.02 m |
+| Line count | 5 |
+| Weights, left to right | 0.05, 0.20, 0.50, 0.20, 0.05 |
+| Line length | Configurable; 1 m, 2 m or nominal spacing discussed |
+| Band width/profile | Kernel sampling width, not a row width. Must be > 0 for rasterisation; initial default one pixel; profile to determine |
+| NoData / outliers | Per area. Bordeaux: 255, masked per pixel when any band of any input file is 255 (§14) |
+| Template sampling | Rasterised kernels on the analysis pixel grid; fractional coverage by default (§6.1) |
+| Translation search | Full two-dimensional square, centred, exhaustive |
+| Translation increment | Analysis raster pixel size per axis; derived, not user-set (0.20 m on the test data) |
+| Traversal order | Centre outward; still evaluate every phase |
+| Rotation search | 0–179 degrees, 1-degree increments |
+| Acceptance | Base overlap score >= 0.50 |
+| Row evidence | Gray top-hat or stretch, optional NDVI component; scaling region open (§5) |
+| Peak selection | Open: unconstrained best or orientation consensus (§9) |
+| Seeds | Open: which template lines seed, and the minimum own-line evidence (§10) |
+| Search-centre spacing | To determine; favour sufficiently dense placement; centres on pixel centres |
+| Growth increment | Up to 1 m initially |
+| Minimum curvature radius | Approximate 5–10 m scope assumption |
+| Export | `shapefiles/`: rows with review attributes, blocks with row-end vertices, issues, bridges; GeoPackage copy with diagnostics (§13) |
+| Checks | Reported as attributes and issue points, never enforced; `[review]` thresholds set the review flag (§11) |
+
+Do not confuse spacing-search tolerance around d0 with the final geometric validation range; record both separately.
+
+## 13. Outputs and implementation organisation
+
+Suggested outputs for an initial experiment:
+
+- Classified vineyard polygon layer.
+- Row-evidence raster with CRS/transform.
+- Accepted/deduplicated seed layer and rejected-candidate diagnostics.
+- Full local phase score surfaces or equivalent complete hypothesis records.
+- Final row polylines and endpoint states.
+- Validation failures located on a map, plus a machine-readable report.
+- Exact run configuration and source/crop metadata.
+- A visual overlay of imagery, vineyard boundary, seeds and final rows.
+
+The user mentioned a shapefile attribute table. Support a shapefile export with its accompanying files. A GeoPackage working/export copy is a suggested convenience, not an imposed replacement. Design attribute names with shapefile limitations in mind; preserve more detailed per-run/per-hypothesis data outside the shapefile if necessary.
+
+Python ecosystem candidates include Rasterio/GDAL for rasters, NumPy/SciPy for scoring, scikit-image/OpenCV for image processing, Shapely/GeoPandas for geometry and PyProj for coordinate transformations. `pyproject.toml` declares NumPy, SciPy, Shapely, Rasterio, GeoPandas, pyogrio and PyProj. Only the file adapters (`tools/io/`) use Rasterio, GeoPandas and pyogrio; the algorithm needs only NumPy, SciPy and Shapely. scikit-image/OpenCV remain candidates for later. No package versions have been pinned.
+
+Keep pipeline stages separable so filters and reconstruction choices can be compared without rewriting coordinate handling. Save useful intermediate results because exhaustive search is expensive. Optimisations should preserve results and the explicitly requested full translation grid.
+
+### Repository layout
+
+Revised 2026-11-07 (§17): `src/` holds only entry files. The importable code is the `tools/` package, nested one subpackage per pipeline stage, packaged with `pyproject.toml` (setuptools) and tested with pytest. Modules inside `tools/` import each other only with relative imports, so the package can later move into a QGIS plugin unchanged. Only `tools/io/` and `tools/export/` touch file formats.
+
+    vineliner/
+    ├── PROJECT.md                this design brief
+    ├── README.md                 setup, running, outputs, assumptions
+    ├── pyproject.toml            package metadata and dependencies
+    ├── configs/
+    │   ├── default.toml          agreed defaults (§12); OPEN keys left unset
+    │   └── bordeaux.toml         per-area settings and first-run PICKs (§14, §18)
+    ├── dof/                      orthophoto inputs; *.tif is git-ignored, .gitkeep keeps the folder
+    │   └── bordeaux/             first test pair (§14)
+    ├── poly/poly.gpkg            hand-drawn Bordeaux blocks, standing in for classification (§4)
+    ├── runs/                     run outputs, created at run time, git-ignored
+    ├── src/                      entry files only
+    │   ├── run_pipeline.py       run the pipeline for a config (--blocks, --plan)
+    │   └── describe_inputs.py    print raster/polygon metadata
+    ├── tools/
+    │   ├── config/               loader.py, spacing.py, settings.py: load, merge, validate (§12)
+    │   ├── geo/                  grid.py (world <-> array, once), angles.py (§3, §6)
+    │   ├── io/                   raster.py (rasterio), vector.py (GeoPandas): file adapters
+    │   ├── imagery/              masks.py (valid mask, §14), evidence.py (V in [0,1], §5)
+    │   ├── vineyards/            blocks.py (polygons, masks), classify.py (not implemented) (§4)
+    │   ├── template/             geometry.py (§6), kernels.py (§6.1)
+    │   ├── search/               hypotheses.py, scoring.py, local.py, selection.py,
+    │   │                         persistence.py, storage.py (§7–9)
+    │   ├── reconstruction/       seeds.py, chains.py, growth.py, rows.py (§10)
+    │   ├── validation/           checks.py (§11)
+    │   ├── export/               layers.py, report.py, overlay.py, png.py (§13)
+    │   └── pipeline/             run.py: stages in order, intermediates saved
+    └── tests/                    mirrors tools/, plus an end-to-end synthetic run
+
+**Search implementation.**
+- For each spacing, every rotation, band and translation is packed into one sparse matrix over a fixed pixel window.
+- A batch of centres is then scored with one sparse-dense product per spacing. Tests check the result against the direct sums of §6.1.
+- On the Bordeaux settings this takes about 40 ms per centre with 3-px bands. That's 185,220 hypotheses per centre.
+
+**Score storage** (`[storage] surfaces`):
+- `all` keeps every surface. That would be about 5.9 GB per Bordeaux run before compression (7,947 centres × 185,220 float32 scores).
+- `winning_spacing` keeps every translation × rotation surface of each centre's winning spacing.
+- `none` keeps nothing.
+- Per-centre best scores per rotation and per spacing are always saved (`centre_profiles.npz`).
+
+## 14. GURS imagery: acquisition and crop workflow
+
+Primary entry point: [Javni geodetski podatki (JGP)](https://ipi.eprostor.gov.si/jgp/data).
+
+GURS products relevant here are RGB DOF025 at 0.25 m/pixel, RGB DOF050 at 0.50 m/pixel, and false-colour DOF050IR at 0.50 m/pixel. Prefer DOF025 where obtainable; DOF050 is a useful readily listed baseline. At 2 m row spacing these correspond to approximately 8 and 4 pixels per spacing respectively. These pixel counts are not extraction-accuracy guarantees.
+
+### Verified access distinction, 2026-11-06
+
+The live JGP catalogue was inspected. The observed route is:
+
+    VSTOPI V APLIKACIJO
+    -> DRŽAVNI TOPOGRAFSKI SISTEM
+    -> DALJINSKO ZAZNAVANJE
+    -> Ortofoto
+    -> Prenos podatkov
+
+It lists **List ortofoto DOF050 — Oktober 2025 / GeoTiff**. Its external-link control opens [the JGP map](https://ipi.eprostor.gov.si/jv/?map=jgp). The map imagery did not render in this inspection, so no specific vineyard tile or completed tile download was verified. The catalogue date must not be assumed to be the photography date.
+
+DOF025 and infrared products are documented by GURS, but were not listed as downloadable choices in the inspected JGP panel. GURS's access page directs users to request these products at gic.gu@gov.si, identifying the required area. Follow that route for DOF025 instead of assuming that it appears in the current direct-download catalogue. No request/email has been sent on the user's behalf.
+
+GURS states that JGP orthophoto downloads embed geolocation in the GeoTIFF header. Other distribution routes may use TIFF plus world-file geolocation; preserve any sidecars and verify CRS/transform if using those files. GURS identifies D96/TM as the native orthophoto coordinate system; its EPSG code is 3794.
+
+### Obtaining and preparing a test area
+
+1. Identify a vineyard the user recognises in the selected coastal area. The screenshot refers to Škocjan; its exact coordinates were not supplied, so no tile ID or geographic footprint has been inferred from it.
+2. Use the GURS product's tile selector/map to obtain the relevant native-resolution orthophoto sheet. If DOF025 is needed, use the documented GURS request route. The exact tile selection was not completed in this session.
+3. Open the downloaded raster in QGIS and inspect its CRS, extent, bands and pixel size before cropping.
+4. Use **Raster > Extraction > Clip Raster by Extent** and **Draw on canvas** to select a rectangle containing the complete vineyard and some surrounding context. Save a permanent `.tif` output. Keep the source CRS and native resolution; do not use a screenshot or rendered map image as the source.
+5. If clipping to an existing polygon, use **Clip Raster by Mask Layer** and enable **Keep resolution of input raster**, preserving the appropriate target CRS. Keep the polygon separately for algorithm testing.
+6. Check the crop's CRS and transform after export, and confirm its pixel size matches the source. Cropping changes the raster origin/extent while retaining georeferencing.
+7. Retain one crop with straight rows, one with curved rows and one with neighbouring blocks of different orientations if available. Include imagery provenance and any manually annotated reference rows.
+
+Do not use the convenient outer rectangle of a crop as a substitute for the actual classified vineyard boundary in the completion tests.
+
+### Test imagery in the repository: `dof/bordeaux/`
+
+The first test data is not GURS imagery. Its file headers and pixel statistics were inspected on 2026-11-07, without GDAL. Re-check these facts with Rasterio/GDAL once the dependencies are installed.
+
+| Property | `rgb.tif` | `nir.tif` |
+| --- | --- | --- |
+| Size | 2000 × 2000 px, 3 bands, uint8, uncompressed, pixel-interleaved, no overviews | same |
+| Pixel size | 0.20 × 0.20 m | same |
+| Upper-left corner | 449350.5, 6426545.4 | same grid, so no resampling is needed to combine them |
+| Extent | 400 m × 400 m | same |
+| CRS | Lambert Conformal Conic parameters matching Lambert-93, with citation "EPSG:2154". Stored as a user-defined projected CRS with an incomplete datum/ellipsoid definition, not as the formal EPSG code | same |
+| NoData | 255 in every band | same |
+| Band descriptions | none recorded | none recorded |
+
+Observations and cautions:
+
+- The scene contains several vineyard blocks with different row orientations, separated by roads, plus a bare parcel and buildings. That suits the block-separation and orientation tests (§4).
+- Rough row-spacing estimate: about 1.3–1.5 m, roughly 7 pixels, from autocorrelation on five crops. This is unvalidated, and it lies outside the 1.80–2.20 m default spacing range and below the 1.5–2.5 m Slovenian scope assumption. `configs/bordeaux.toml` sets the search range to 1.20–1.60 m and the validation range to the same values as a starting point.
+- **Band order assumption (2026-11-07):** `nir.tif` is a false-colour product with bands NIR, red, green; `rgb.tif` is red, green, blue. The files do not record this. Evidence: `nir.tif` bands 2 and 3 closely track the RGB red and green bands but are not identical (mean absolute difference ≈ 2.3 DN in a sample). The order is set explicitly in `configs/bordeaux.toml` ([input] `rgb_bands`, `nir_bands`), not inferred from array position (§3). It is recorded as an assumption in README.md.
+- **NoData and outliers (2026-11-07):** 255 is treated as "no data or outlier". Vegetation never reflects that strongly in any band, so 255 values are water glint, white roofs and similar, never row evidence. A pixel is masked when any band of either file equals 255 (`nodata_rule = "any_band"`). Counts on the full scene:
+
+  | Band | Pixels at 255 |
+  | --- | ---: |
+  | `rgb.tif` red / green / blue | 390 / 253 / 168 |
+  | `nir.tif` NIR / red / green | 19 / 603 / 623 |
+  | Any band of `rgb.tif` | 513 |
+  | Any band of `nir.tif` | 821 |
+  | **Any band of either file (masked)** | **955 (0.024%)** |
+
+  All 19 pixels with NIR = 255 are near-white in RGB (mean 249, 252, 242); none are vegetation-like. 50 RGB pixels are 255 in all three bands. The scene has no large NoData region, so in practice the mask removes saturated outliers.
+- Source product, tile identifier and capture date are not recorded in the files. Record them from the provider before reporting results.
+- **`ndvi.tif` (added by the user, 2026-11-07).**
+  - Single band, float32, NoData −3.4e38 (about 0.01% of pixels are NoData or non-finite). Same grid and CRS as `rgb.tif`.
+  - It equals (NIR − red) / (NIR + red), with NIR from `nir.tif` band 1 and red from `rgb.tif` band 1 (correlation 1.0). That confirms the band-order assumption above.
+  - Inside the blocks NDVI is low (median −0.08, 99th percentile 0.18): mostly bare soil with vine rows.
+  - It separates vegetation from soil clearly at scene scale, for example the grass verges. At full resolution it is smoother than the RGB: its pixel-to-pixel gradient relative to its contrast is half that of the red band. Rows show only faintly in some blocks.
+- **Blocks.** `poly/poly.gpkg` (supplied 2026-11-07) holds 7 hand-drawn blocks, 0.2–0.8 ha each and 3.2 ha in total, in the raster's own CRS. Its `id` field is empty, so blocks are numbered 0–6 in file order.
+
+### Sentinel suitability
+
+Sentinel-2 is georeferenced, but its highest-resolution RGB and broad NIR bands have 10 m pixels. That is inadequate for directly resolving rows separated by approximately 2 m. Resampling to a finer output grid cannot recover those row details. Sentinel may be useful for larger-scale context or parcel-level monitoring; it is not the initial row-extraction test source.
+
+## 15. Unresolved empirical choices
+
+The following remain deliberately open rather than being silently settled by an implementer:
+
+- Automatic vineyard classification method and separation of adjoining planting blocks.
+- Grayscale/colour/NIR evidence function, contrast settings and any threshold.
+- Band width/profile and line length.
+- Kernel coverage method (fractional by default, binary as a comparison) and, if sampled, the sub-pixel sample count s.
+- Search-box centre spacing and its possible adaptation to curvature/area.
+- Whether the translation square tracks each tested d or stays at nominal d0. The increment and rounding are now fixed by §7.
+- Spacing search range for each test area. Bordeaux starts at 1.20–1.60 m (§14); confirm or narrow it from results.
+- Provenance (product, tile, capture date) of the Bordeaux test imagery. Its band order and 255 masking are working assumptions (§14).
+- Partially supported lines and polygon-border normalisation.
+- Exact directional-persistence statistic, tie-breaking and peak selection.
+- Duplicate detection and whether neighbouring template lines become separate seeds.
+- Join rules, turning limits, unsupported-gap limit, growth thresholds and stopping safeguards.
+- Geometric tolerances, boundary/headland spacing policy and evaluation metrics.
+- Full-score storage format and practical runtime/memory limits.
+
+Use small empirical comparisons to choose these. Preserve the user-approved baseline and document changes to scoring or hypothesis coverage.
+
+Every open choice is an unset key in `configs/default.toml`, and a run refuses to start without it. `configs/bordeaux.toml` sets first-run PICKs for all of them, each with its reason. They are listed in §18, and every run's `report.json` repeats them under `open_choices_set_by_this_run`. Two further open choices arose during implementation:
+
+- Peak selection (`[selection]`, §9).
+- Seed filtering and chain smoothing (`[seeds] min_band_mean`, `[reconstruction] chain_smoothing_m`, §10).
+
+## 16. Sources and verification notes
+
+The core algorithm and parameter choices above come from the design discussion, not from copying an existing published algorithm. The following primary sources ground imagery facts and provide research comparisons. The only georeferenced test input so far is the Bordeaux pair in `dof/bordeaux/`. Its headers and basic statistics have been inspected (§14), but no row extraction has been run on it.
+
+1. [GURS — Daljinsko zaznavanje / orthophoto specifications and embedded geolocation](https://www.e-prostor.gov.si/podrocja/drzavni-topografski-sistem/daljinsko-zaznavanje/).
+2. [GURS — Orthophoto FAQ: JGP GeoTIFF and D96/TM](https://www.e-prostor.gov.si/podrocja/drzavni-topografski-sistem/drugo/razno/pogosta-vprasanja/).
+3. [GURS — Access to geodetic data, including DOF025/infrared request route](https://www.e-prostor.gov.si/en/access-to-geodetic-data/).
+4. [GURS — Horizontal coordinate system and EPSG:3794](https://www.e-prostor.gov.si/podrocja/drzavni-koordinatni-sistem/horizontalna-sestavina/).
+5. [QGIS 3.44 — Clip raster by extent and mask layer](https://doc.qgis.org/3.44/en/docs/user_manual/processing_algs/gdal/rasterextraction.html).
+6. [Copernicus SentiWiki — Sentinel-2 MSI spatial resolutions](https://sentiwiki.copernicus.eu/web/s2-mission).
+7. [Comba et al. (2015), Vineyard detection from unmanned aerial systems images](https://doi.org/10.1016/j.compag.2015.03.011): grayscale aerial-image row extraction as a comparison.
+8. [Delenne et al. (2008), A non-supervised approach using Gabor filters for vine-plot detection in aerial images](https://www.sciencedirect.com/science/article/abs/pii/S0168169907002487): periodic-pattern detection, orientation and spacing.
+9. [Padua et al. (2024), Versatile method for grapevine row detection in challenging vineyard terrains using aerial imagery](https://doi.org/10.1016/j.compag.2024.109372): irregular/curved rows with image and elevation information.
+10. [Poblete-Echeverria et al. (2017), Detection and Segmentation of Vine Canopy in Ultra-High Spatial Resolution RGB Imagery](https://www.mdpi.com/2072-4292/9/3/268): canopy segmentation and spectral/background ambiguity.
+11. [Padua et al. (2018), Multi-Temporal Vineyard Monitoring through UAV-Based RGB Imagery](https://www.mdpi.com/2072-4292/10/12/1907): seasonal canopy/inter-row changes.
+
+12. [rasterstats — zonal statistics of vector geometries over rasters](https://github.com/perrygeo/python-rasterstats) and [exactextract — exact per-pixel polygon coverage](https://github.com/isciences/exactextract): candidate independent checks for the kernel rasteriser (§6.1), not the search's scoring path.
+
+Access routes were checked on 2026-11-06. Recheck current product availability and metadata when obtaining actual test tiles.
+
+## 17. Decision log
+
+### 2026-11-07
+
+1. **Translation increment from pixel size.** The translation increment equals the analysis raster's pixel size on each axis, replacing the 0.10 m default. There is no reason to test 0.10 m phases on 0.20 m imagery. This reduces hypothesis coverage, for example from 484 to 100–121 translations per (theta, d) on 0.20 m data (§7). The exhaustive two-dimensional translation search is kept.
+2. **Predetermined spacing range.** Spacing hypotheses come from a user-configured range fixed before the run (d_min, d_max, step). The default is unchanged: 21 options, d0 ±10% at 1%.
+3. **Rasterised template.** Template overlap is computed through kernels rasterised on the analysis pixel grid, with fractional coverage by default (§6.1). Translations are whole-pixel shifts of those kernels.
+4. **Repository set-up.** `src/` layout, `pyproject.toml` with setuptools, pytest, one module per pipeline stage (§13). Imagery (`*.tif`, `*.tiff`) is git-ignored; `dof/.gitkeep` keeps the input folder.
+5. **Row width means row spacing.** "Row width" is the distance between neighbouring rows, where the tractors drive. Rows are reduced to lines and have no width of their own; the template band width w is only a kernel sampling width (§6).
+6. **Spacing range in the config.** Users set the searched spacing range in `[spacing]` (`min_m`, `max_m`, `step_m`) of a per-area config merged over `configs/default.toml`. `vineliner.config` loads, merges and validates it (§7). The Bordeaux range is 1.20–1.60 m at 0.02 m.
+7. **Bordeaux band order assumed.** `nir.tif` is NIR, red, green and `rgb.tif` is red, green, blue, set in `configs/bordeaux.toml` and recorded in README.md (§14).
+8. **255 is NoData or outlier on the Bordeaux pair.** Vegetation never reaches 255, so 255 values are water, white roofs and similar. A pixel is masked when any band of either file is 255: 955 pixels, 0.024% (§14).
+9. **Layout: entry files in `src/`, importable modules in `tools/`.** Supersedes the `src/vineliner/` layout of item 4. Subpackages are nested by stage; internal imports are relative, so `tools/` can move into a future QGIS plugin; file formats are confined to `tools/io/` and `tools/export/` (§13).
+10. **Block polygons from `poly/poly.gpkg`.** The user supplied 7 hand-drawn Bordeaux blocks in the raster's own CRS. Automatic classification stays unimplemented; reports call the polygons a fixture (§4).
+11. **Exact fractional coverage by default.** Kernels use exact polygon–pixel clipping. This removes the open sub-pixel sample count s from the default path (§6.1).
+12. **Peak selection becomes an explicit option.** `[selection] method` = `best` or `orientation_consensus` (§9). It was added because a 2 m template separates neighbouring rotations weakly: in block 0, 17% of raw winners were off the 40° rows, scoring barely above the 40° hypothesis at the same centre. All hypotheses are still scored and the raw winner is still reported.
+13. **Seed filter and chain smoothing.** Two new open keys: `[seeds] min_band_mean`, a line's own evidence needed to seed, and `[reconstruction] chain_smoothing_m` (§10).
+14. **Score storage modes.** `all`, `winning_spacing` or `none` (§13). Bordeaux uses `winning_spacing`, because `all` would be about 5.9 GB per run.
+15. **First-run PICKs for Bordeaux** are recorded in `configs/bordeaux.toml` and §18. They include two changes found by trial on block 0, recorded there:
+    - Translation box `nominal_d0` instead of `tested_d`. With `tested_d`, d = 1.60 m gets 64 translations against 49 for the other spacings, and the larger max pulled 10% of centres onto that range edge.
+    - Band width 3 px instead of 1. A 1 px band scores flat across a 3–4 px row stripe, so neighbouring centres placed one row up to 0.6 m apart.
+16. **Evidence scaled per block** (`[evidence] scale_region`, open; Bordeaux PICK `per_block`). Scaling over all blocks let the high-contrast block 1 set the scale: block 0 accepted 234 centres in the full run but 545 when run alone. Per-block scaling makes a block's result independent of the other blocks in the run.
+17. **NDVI as an optional evidence component** (`[input] ndvi`, `[evidence] ndvi_weight`, `ndvi_method`). Added at the user's request to augment the RGB evidence. The default weight 0 keeps the RGB-only baseline; the comparison is in §18.
+18. **Checks are reported, not enforced** (user). Every row is kept. Per-row attributes, a `review` flag and a `conf` class expose uncertainty for later human correction (§11). The thresholds are in `[review]`.
+19. **Bridge gaps** (user). In faint patches, growth continues straight along the row's direction over the last `bridge_tangent_m` (Bordeaux 10 m), for up to `max_gap_m` (Bordeaux 50 m). Every segment records whether it had image support. Bridged parts are reported per row (`bridged_m`, `bridge_pct`) and exported as `bridges.shp`.
+20. **Polygon output with row vertices** (user). `blocks.shp` keeps each supplied polygon's shape and attributes and inserts a vertex wherever a row meets its boundary. Row ends within the boundary tolerance are snapped onto the boundary first: extended along the row when they stop just short, otherwise projected. Row ends and polygon vertices are then identical coordinates.
+21. **Reference rows deferred** (user). Accuracy against hand-digitised rows (§11) waits until the user has reviewed the outputs.
+
+## 18. First Bordeaux results (2026-11-07)
+
+These are the first experimental results, from `configs/bordeaux.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
+
+**Search size.**
+- 7,947 search centres at 2 m spacing.
+- 185,220 hypotheses per centre: 180 rotations × 21 spacings (1.20–1.60 m) × 49 translations. That's 1.47 billion template scores per run.
+- About 6.5 minutes per run: 20 s for kernels, the rest searching (about 40 ms per centre with 3-px bands).
+
+**First-run PICKs for the open choices.**
+
+| Key | PICK | Reason |
+| --- | --- | --- |
+| `evidence.method`, `tophat_size_m` | `black_tophat`, 1.4 m | Rows are thin dark lines on bare soil; removes soil-brightness patches |
+| `evidence.scale_region` | `per_block` | All-block scaling let block 1 set the scale (block 0: 234 vs 545 accepted centres) |
+| `evidence.ndvi_weight` | 0.0 | NDVI at 0.3 did not help (below) |
+| `template.line_length_m` | 2.0 | Steadier orientation than 1 m |
+| `template.band_width_px` | 3 | About the row-stripe width; 1 px left rows ambiguous by up to 0.6 m |
+| `translation.box` | `nominal_d0` | Equal translation count for every spacing; `tested_d` favoured d = 1.60 m |
+| `centres.spacing_m` | 2.0 | About 1.4 rows apart; with seed lines −1..1 every row gets seeds |
+| `scoring.normalisation`, `min_valid_coverage`, `unavailable_bands` | `renormalise_valid`, 0.5, `renormalise` | Missing pixels are not read as soil; edge templates not penalised |
+| `selection.method` | `orientation_consensus`, 6 m, ±5° | 17% of raw winners were off-angle in block 0 |
+| `seeds.lines`, `min_band_mean` | [−1, 0, 1], 0.4 | Inner lines seed neighbouring rows; drops lines on inter-row soil |
+| `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `bordeaux.toml` |
+| `validation.tolerance_m` | 0.3 | Well inside the ~1 m target |
+| `storage.surfaces` | `winning_spacing` | `all` would be about 5.9 GB per run |
+
+**Evidence variants** (all 7 blocks):
+
+| Run | Row sections | Pass all checks | Row length | Spacing / completion failures |
+| --- | ---: | ---: | ---: | ---: |
+| RGB, scaled over all blocks | 428 | 94 | 16.0 km | 2,768 / 384 |
+| **RGB, scaled per block (chosen)** | 444 | 101 | 20.7 km | 2,980 / 291 |
+| + NDVI stretch, weight 0.3 | 539 | 100 | 18.7 km | 3,682 / 458 |
+| + NDVI white top-hat, weight 0.3 | 516 | 92 | 16.8 km | 4,024 / 519 |
+
+Spacing failures are counted per 1 m sample on each side of a row; completion failures per endpoint.
+
+**Per block** (chosen run):
+
+| Block | Accepted centres | Direction | Spacing | Sections | Pass all | Row length |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 545 / 963 | 40° | 1.46 m | 49 | 1 | 2.2 km |
+| 1 | 1,402 / 1,423 | 71° | 1.40 m | 77 | 71 | 4.1 km |
+| 2 | 377 / 572 | 43° | 1.38 m | 58 | 8 | 1.6 km |
+| 3 | 1,372 / 1,953 | 40° | 1.50 m | 80 | 2 | 5.2 km |
+| 4 | 489 / 529 | 62° | 1.40 m | 33 | 19 | 1.5 km |
+| 5 | 914 / 1,581 | 77° | 1.46 m | 78 | 0 | 4.0 km |
+| 6 | 362 / 926 | 41° | 1.40 m | 69 | 0 | 2.2 km |
+
+**Observations.**
+- **Synthetic test.** On synthetic stripes (`tests/pipeline/`), all 38 rows are found once each, end on the boundary at both ends, pass every check, and lie within 0.5 m of the truth (typically within 0.1 m).
+- **Block 1** is reconstructed almost completely: 71 of 77 sections pass and every endpoint is on the boundary.
+- **Blocks 3 and 5** look dense and parallel on the overlay, but almost no section passes. A section fails if any one of its 1 m spacing samples is out of range, and nearly every 50–60 m row has one. The failure points show where.
+- **Pass rates.** 25% of row length passes every check. Another 19% fails only on spacing samples between 1.0 and 1.9 m, just outside the 1.2–1.6 m validation range.
+- **Completion failures** are row ends that stop inside a block. They concentrate in faint, lighter-soil patches where rows are hard to see even by eye, especially in blocks 0, 3, 5 and 6. By the §10 rule they are left unjoined rather than forced.
+- **NDVI** at weight 0.3 gave shorter, more fragmented rows with both methods, though slightly better pass counts in blocks 0 and 2. At 0.2 m it is softer than the RGB (§14). It may serve vineyard classification (§4) better than row placement.
+- The geometry checks cannot show positional accuracy, missed rows outside detected areas, or wrong joins. That needs reference rows.
+
+**Suggested next steps.**
+- Hand-digitise reference rows for one or two blocks (e.g. 1 and 3) and measure positional deviation, missed and extra rows, and fragmentation (§11).
+- Decide the section pass rule: should one out-of-range 1 m spacing sample fail a whole row? Also decide the Bordeaux validation range.
+- Decide how faint patches should end: longer bridging (`max_gap_m`) against stopping inside the block.
+- Speed: kernel caching across runs (20 s), and vectorised growth scoring.
+
+Run outputs: `runs/20261107-142834-all-blocks`, `runs/20261107-143844-rgb-perblock` (chosen), `runs/20261107-143847-ndvi-stretch`, `runs/20261107-143848-ndvi-tophat`. Block-0 trials behind the §17 decisions: `runs/20261107-14*-block0*`.
+
+### Final run for human review (2026-11-07, `runs/20261107-171413-final`)
+
+This run uses the same settings, plus the user decisions §17 items 18–20:
+- checks reported, not enforced;
+- gaps bridged up to 50 m;
+- block polygons with a vertex at every row end.
+
+| | Rows | Length | Share of length |
+| --- | ---: | ---: | ---: |
+| `conf = high` | 100 | 5.3 km | 23% |
+| `conf = medium` (notes only) | 131 | 9.2 km | 40% |
+| `conf = low` (`review = 1`) | 182 | 8.4 km | 37% |
+| **Total** | 413 | 22.9 km | |
+
+- **Bridged length:** 1.7 km, 7% of all row length.
+- **Dangling ends:** 176.
+- **Crossings:** 2.
+- **Reasons for `review = 1`** (a row can have several):
+
+  | Reason | Rows |
+  | --- | ---: |
+  | Spacing off at more than 25% of samples | 168 |
+  | Bridged more than 15 m or 30% | 157 |
+  | Dangling end(s) | 157 |
+  | Weak evidence | 80 |
+  | Crossings | 4 |
+  | Short | 4 |
+
+| Block | Rows | high / medium / low | Dangling ends |
+| ---: | ---: | --- | ---: |
+| 0 | 50 | 2 / 28 / 20 | 18 |
+| 1 | 77 | 73 / 4 / 0 | 0 |
+| 2 | 55 | 12 / 25 / 18 | 13 |
+| 3 | 72 | 2 / 13 / 57 | 59 |
+| 4 | 33 | 10 / 23 / 0 | 0 |
+| 5 | 70 | 1 / 27 / 42 | 37 |
+| 6 | 56 | 0 / 11 / 45 | 49 |
+
+Blocks 1 and 4 need little or no review. In blocks 3, 5 and 6 the flags concentrate in faint patches, and those flags are the work list for the user's review of the product.
