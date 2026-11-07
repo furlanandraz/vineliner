@@ -1,0 +1,125 @@
+# Vineliner run configuration: defaults agreed in PROJECT.md §12.
+#
+# Keys marked OPEN are deliberately left unset (PROJECT.md §15). A run must set
+# them explicitly; tools.config.RunSettings refuses to start and lists every
+# missing key. Nothing is filled in silently.
+#
+# Every run records the exact configuration it used next to its outputs.
+#
+# Per-area settings go in their own file (e.g. configs/bordeaux.toml). That
+# file only needs the keys it changes; it is merged on top of this one:
+#     python src/run_pipeline.py configs/bordeaux.toml
+# Relative paths are relative to the project root.
+
+[input]                         # §3, §14: set per area
+# rgb =                         # path to the RGB GeoTIFF
+# rgb_bands =                   # band meaning in file order, e.g. ["red", "green", "blue"]
+# nir =                         # optional path to a false-colour NIR GeoTIFF on the same grid
+# nir_bands =                   # band meaning in file order, e.g. ["nir", "red", "green"]
+# ndvi =                        # optional single-band NDVI GeoTIFF on the same grid (its own NoData applies)
+# nodata_value =                # value treated as NoData or outlier; unset = the file's NoData
+nodata_rule = "any_band"        # mask a pixel when ANY band of ANY input file equals nodata_value
+                                # ("all_bands": only when every band of one file does)
+
+[vineyards]                     # §4: block polygons; automatic classification is OPEN
+# source =                      # polygon file (GeoPackage, shapefile, ...)
+# layer =                       # optional layer name
+# id_field =                    # optional id attribute; unset = 0, 1, ... in file order
+# blocks =                      # optional subset of block ids to process
+
+[evidence]                      # §5: row-evidence raster V in [0, 1], high = row
+# method =                      # OPEN: "gray_stretch" | "black_tophat"
+bands = ["red", "green", "blue"]  # averaged to gray; names from rgb_bands / nir_bands
+# tophat_size_m =               # OPEN for black_tophat: closing window side
+scale_percentile = 99.0         # top-hats: this percentile of the response maps to V = 1
+stretch_percentiles = [2.0, 98.0]  # stretches: lo/hi percentiles
+# scale_region =                # OPEN: "per_block" (each block scaled on its own) | "all_blocks"
+ndvi_weight = 0.0               # share of an NDVI component in V; 0 = RGB-only (PROJECT.md §2, §5)
+# ndvi_method =                 # needed when ndvi_weight > 0: "white_tophat" | "stretch"
+# ndvi_tophat_size_m =          # needed for white_tophat
+
+[template]                      # §6
+indices = [-2, -1, 0, 1, 2]     # outer left ... outer right
+weights = [0.05, 0.20, 0.50, 0.20, 0.05]  # must sum to 1.00
+# line_length_m =               # OPEN: 1.0, 2.0 or nominal spacing discussed
+band_width_px = 1               # kernel sampling width, not a row width; must be > 0
+
+[kernels]                       # §6.1
+coverage = "exact"              # "exact" | "sampled" (fractional); "centre" | "all_touched" (comparisons)
+# subpixel_samples =            # s for s x s sampling; only used by "sampled"
+
+[spacing]                       # §6-7: row width = distance between neighbouring rows (the tractor lane)
+# The search range is fixed before the run. Both ends are searched:
+# min_m, min_m + step_m, ..., max_m. (max_m - min_m) must be a whole number
+# of steps, otherwise the run refuses to start.
+nominal_m = 2.0                 # d0, the expected spacing
+min_m = 1.80
+max_m = 2.20
+step_m = 0.02                   # 1 % of d0 -> 21 options
+# Each extra option adds a full search (180 rotations x every translation) per centre.
+
+[rotation]                      # §7: axial, 0..179 deg
+start_deg = 0
+stop_deg = 180                  # exclusive
+step_deg = 1
+
+[translation]                   # §7
+# The increment is not configurable: it equals the analysis raster's pixel size per axis.
+# box =                         # OPEN: "tested_d" (box side = tested spacing) or "nominal_d0"
+order = "centre_outward"        # ordering only; every offset is still evaluated
+
+[centres]                       # §7: centres sit on pixel centres of the analysis raster
+# spacing_m =                   # OPEN: favour dense placement
+
+[scoring]                       # §8
+accept_min = 0.50               # tentative; overlap score, not a probability
+# normalisation =               # OPEN: "renormalise_valid" (mean over valid pixels) | "full_kernel"
+# min_valid_coverage =          # OPEN: a band below this valid coverage is unavailable
+# unavailable_bands =           # OPEN: "renormalise" (drop their weight) | "zero" (count as 0)
+
+[selection]                     # §9, §15: which scored hypothesis a centre reports (peak selection)
+# method =                      # OPEN: "best" (unconstrained winner) | "orientation_consensus"
+# consensus_radius_m =          # orientation_consensus: neighbours averaged for the local direction
+# consensus_window_deg =        # orientation_consensus: allowed difference from that direction
+
+[seeds]                         # §10 step 2
+# lines =                       # OPEN: template lines that become seeds, e.g. [0] or [-1, 0, 1]
+# min_band_mean =               # OPEN: a line's own evidence m_k needed to become a seed; 0 = none
+
+[reconstruction]                # §10
+growth_step_m = 1.0             # "up to 1 m initially"
+min_curvature_radius_m = 5.0    # approximate scope assumption (5-10 m); sets the turn per step
+# link_angle_deg =              # OPEN: seeds on one row differ by at most this angle
+# link_lateral_frac =           # OPEN: ... and sit at most this fraction of d apart across the row
+# link_along_m =                # OPEN: ... and at most this far apart along the row
+# chain_smoothing_m =           # OPEN: across-row smoothing window along a chain; 0 = none
+# growth_min_score =            # OPEN: template score that counts as support during growth
+# max_gap_m =                   # OPEN: unsupported (bridged) growth allowed before an end stops
+# bridge_tangent_m =            # OPEN: bridging goes straight along the row direction over this length
+# join_distance_frac =          # OPEN: free ends closer than this fraction of d may join
+# join_angle_deg =              # OPEN: ... when they face each other within this angle
+# max_row_length_m =            # OPEN: growth safeguard per endpoint
+
+[validation]                    # §11: final-geometry range, separate from [spacing]
+spacing_min_m = 1.5
+spacing_max_m = 2.5
+# tolerance_m =                 # OPEN: boundary / containment tolerance
+sample_step_m = 1.0             # spacing check sample interval along each row
+
+[review]                        # §11: when a row is flagged for human review (review = 1)
+# Checks never remove or fail a row. They are reported as attributes on each
+# line; these thresholds only decide the review flag and the confidence class.
+# Dangling ends, crossings, self-intersections and leaving the block always flag.
+max_bridged_m = 15.0            # bridged (unsupported) length above this flags the row
+max_bridged_frac = 0.3          # ... or bridged share of the row above this
+max_spacing_out_frac = 0.25     # share of spacing samples outside the validation range
+min_support_frac = 0.5          # share of 1 m samples along the row with template support
+min_length_m = 4.0              # shorter rows are flagged
+
+[storage]                       # §7: score surfaces
+# surfaces =                    # OPEN: "all" | "winning_spacing" | "none"
+
+[export]                        # §13
+shapefile = true
+geopackage = true               # optional convenience copy with every layer
+overlay = true                  # PNG of imagery, blocks, seeds, rows and failures
