@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vineliner"
+version = "0.1.0"
+description = "Reconstruct vineyard rows as georeferenced polylines from orthophotos."
+readme = "README.md"
+requires-python = ">=3.12"
+# Core (tools/ except io/ and export/): numpy, scipy, shapely.
+# File adapters (tools/io/): rasterio, geopandas, pyogrio, pyproj.
+# Versions are deliberately not pinned yet.
+dependencies = [
+    "numpy",
+    "scipy",
+    "shapely>=2",
+    "rasterio",
+    "geopandas",
+    "pyogrio",
+    "pyproj",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# Importable modules live in tools/; src/ holds only entry files.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = "--import-mode=importlib"
