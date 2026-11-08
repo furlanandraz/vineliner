@@ -257,7 +257,18 @@ Call this an overlap/matching score. It is not a calibrated probability of posit
 
 A row-versus-inter-row contrast term was proposed to reject uniformly strong patches. It is an optional comparison, not an agreed subtraction from the base score. Subtracting a penalty changes the acceptance examples above; if explored, retain the base score and the additional term separately and record the decision.
 
-Outside-polygon and NoData samples must not contribute external image support. Coverage normalisation, minimum valid coverage and whether unavailable bands retain or renormalise their weights remain open border-case choices. Resolve these explicitly before interpreting boundary scores; do not quietly reinterpret missing pixels as observed soil.
+Outside-polygon and NoData samples must not contribute external image support. Coverage normalisation and minimum valid coverage remain open border-case choices. Do not quietly reinterpret missing pixels as observed soil.
+
+**Unavailable bands (decided 2026-11-08).** A band below the minimum valid coverage, for example one outside the block, is unavailable. Its weight moves to its mirror band on the other side of the centre (`tools/search/scoring.py`). This is fixed, not a setting. Weights are rescaled to sum to 1, which matters only when a band and its mirror are both unavailable. The score is undefined when the centre band is unavailable.
+
+| Available bands | Weights (−2, −1, 0, +1, +2) |
+| --- | --- |
+| All | 0.05, 0.20, 0.50, 0.20, 0.05 |
+| −2 outside | –, 0.20, 0.50, 0.20, 0.10 |
+| −2 and −1 outside | –, –, 0.50, 0.40, 0.10 |
+| Only the centre | –, –, 1.00, –, – |
+
+The centre keeps its share, and the side still inside keeps the neighbour support that holds a template in its lane. Before, the remaining weights were rescaled in proportion, so the centre's share rose to 0.67 with one side outside.
 
 ## 9. Directional persistence across translations
 
@@ -317,9 +328,10 @@ Every threshold named here is an `[reconstruction]` or `[seeds]` config key and 
    - Each candidate is scored with the same five-line template and kernels as the search.
    - The best score wins if it reaches `growth_min_score`. Otherwise the step goes straight on, unsupported.
 4. **Joins.** A free end of another row that lies within `link_lateral_frac` × d to the side of the growth line, at most `join_distance_frac` × d beyond the step, and facing back within `join_angle_deg`, is joined, and the rows merge.
+   - *Head-on joins (2026-11-08).* When a step conflicts with another row, that row may be the same row coming the other way, offset a little more than the join allows. It is joined when it has a free end facing back within `join_angle_deg`, less than 0.5 × d to the side, and at most two steps plus the join reach behind the tip. Beyond 0.5 × d lies the neighbouring row. Both ends move in a round, so they can pass each other before either one sees the other.
 5. **Terminal states.**
-   - *conflict:* the step crosses another row or lands on its line.
-   - *boundary:* the step leaves the polygon, and is cut at the boundary.
+   - *conflict:* the step crosses another row or lands on its line, and it is not a head-on join.
+   - *boundary:* the step leaves the polygon, and is cut at the boundary. If the straight step leaves too, the last step goes straight, not turned: its template hangs over the boundary and can't steer. There is no angle rule, so a row may end at a long edge at any angle.
    - *unsupported:* more than `max_gap_m` of unsupported steps; the unsupported tail is removed.
    - *limit:* `max_row_length_m` grown.
    Growth always terminates.
@@ -659,6 +671,9 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 29. **Row smoothing** (user; `[smoothing]`, §10). Rows came out jagged: 28 vertices doubled back (turns over 90°, up to 177°) where row pieces were joined, and 121 turned more than 20°. Joins no longer step back, and a maximum direction change between vertices (20° by default) is enforced on the final rows. Results in §18.
 30. **Squash hanging pieces into estimated rows** (user; `merge_*` in `[missing_row_estimate]`, §10). Buffer ±0.5 × the block's median row width (user choice: catches drift, not the neighbouring row), ≥ 80% inside, ≤ 10°. On Bordeaux the length drawn from the image rose from 15.35 to 18.21 km and rows for review fell from 70 to 49 (§18).
 31. **Row numbering** (user; `[row_numbering]`, §10). Built only after the squash showed a clear improvement. Numbering is consecutive in clean blocks, skipped numbers mark missing rows, and uncertain numbers flag rows that drift between lanes.
+32. **Mirrored weights at block edges** (user; fixed, §8). The weight of a template line outside the block moves to its mirror line: 0.50 / 0.40 / 0.10 with one side outside, instead of 0.67 / 0.27 / 0.07. The `[scoring] unavailable_bands` option is gone, and `[template] indices` must be symmetric about 0. Equal weights of 0.2, tried as config, were much worse (§18).
+33. **Head-on joins** (§10). Most rows lost after mirroring broke where two pieces of one row met head-on, 0.37–0.55 m apart sideways: just over the join's 0.36 m. Both stopped as a conflict and were removed as hanging. A conflict with a free end of the same row now joins.
+34. **Rows end along their own direction** (§10). Following the edge was tried first: when a step would leave the block, it took a supported turn that stayed inside. The user ruled out an angle rule, since rows really do end at long edges. Edge following made 15 steps on Bordeaux with no measurable effect, and it bent synthetic row ends by up to 0.45 m along the boundary. It was replaced by the opposite: the last step to the boundary goes straight.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -680,7 +695,7 @@ These are the first experimental results, from `configs/centroid-pretest.toml` o
 | `template.band_width_px` | 3 | About the row-stripe width; 1 px left rows ambiguous by up to 0.6 m |
 | `translation.box` | `nominal_d0` | Equal translation count for every spacing; `tested_d` favoured d = 1.60 m |
 | `centres.spacing_m` | 2.0 | About 1.4 rows apart; with seed lines −1..1 every row gets seeds |
-| `scoring.normalisation`, `min_valid_coverage`, `unavailable_bands` | `renormalise_valid`, 0.5, `renormalise` | Missing pixels are not read as soil; edge templates not penalised |
+| `scoring.normalisation`, `min_valid_coverage` | `renormalise_valid`, 0.5 | Missing pixels are not read as soil. Unavailable bands were `renormalise`; they are now mirrored (§8, 2026-11-08) |
 | `selection.method` | `orientation_consensus`, 6 m, ±5° | 17% of raw winners were off-angle in block 0 |
 | `seeds.lines`, `min_band_mean` | [−1, 0, 1], 0.4 | Inner lines seed neighbouring rows; drops lines on inter-row soil |
 | `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `centroid-pretest.toml` |
@@ -898,4 +913,27 @@ Numbering (`centroid-pretest-cache-row-estimate-numbering.toml`, `runs/20261108-
 - **Block 6.** Its 5-row gap lies beyond the estimate's neighbour search, which reaches (3 + 2.5) × the row width. The numbering found it anyway.
 - **Uncertain rows.** All 21 also have other issues. Their median share of spacing samples out of range is 31.5%, against 1.5% for the other rows, so they mark real lane drift. They raise the rows for review from 49 to 57.
 - **Shared numbers.** Two numbers are shared, each between a long outermost row and short fragments at the block edge.
+
+### Edge rows on Bordeaux (2026-11-08)
+
+All runs use `centroid-pretest-cache-row-estimate-numbering.toml`. Rows are grouped by their row number's distance from the first and last number in their block.
+
+| | Before (`…203818-numbering`) | Mirrored | Equal weights 0.2 | Mirrored + head-on joins (`…220040-edge-final`) |
+| --- | ---: | ---: | ---: | ---: |
+| Rows | 306 | 295 | 252 | 313 |
+| Length drawn from the image | 18.21 km | 18.00 km | 15.96 km | 19.64 km |
+| Rows for review | 57 | 41 | 40 | 45 |
+| Uncertain / missing row numbers | 21 / 13 | 11 / 21 | 23 / 51 | 13 / 5 |
+| Hanging pieces left over | 79 | 87 | 192 | 47 |
+| Outermost rows: review | 50% | 33% | 33% | 33% |
+| Outermost rows: mean length | 29 m | 38 m | 39 m | 38 m |
+| Outermost rows: ends grazing the edge (< 25°) | 42% | 27% | 27% | 27% |
+| Third rows from the edge: review | 43% | 14% | – | 14% |
+
+- **Mirroring.** It fixes the edge rows, but it lost 11 rows. Two blocks each got a 4-row gap, which the estimate doesn't fill (`max_missing_rows` = 3).
+- **Lost rows.** Block 2 lost them in a weak patch inside the block. Block 5 lost them at a long edge the rows meet at a sharp angle. Both times the pieces of each row were found, but they met head-on just too far apart to join.
+- **Head-on joins.** 37 joins put those rows back and more. 14 estimated rows are now detected directly (33 estimated, from 46). Six of seven blocks are numbered without gaps. Block 6 keeps the 5-row gap it had before, beyond the estimate's reach.
+- **Review.** Rows for review rose from 41 to 45 against mirroring alone, but with 18 more rows: the extra rows run through weak patches and are flagged as such.
+- **Geometry.** No dangling ends, crossings or turns over 20° in any run.
+- **Synthetic test.** Every true row is within 0.3 m (Hausdorff) of its detected row. Before the last-step rule, ends at a 25° edge overshot by up to 0.55 m.
 

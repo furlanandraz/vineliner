@@ -172,6 +172,13 @@ It runs on the grown rows and again on the final clipped rows, so the limit hold
 
 Joins also no longer step backwards: when a row piece joins one that starts slightly behind its tip, the overlapping start is dropped.
 
+### Rows at block edges
+
+These rules are fixed, not settings:
+- **Template lines outside the block.** A template line that falls outside the block passes its weight to its mirror line on the other side of the centre. With one side outside, the weights are 0.50 centre, 0.40 inner, 0.10 outer, so a template at the edge still checks its neighbouring row.
+- **Head-on joins.** Two pieces of one row that meet head-on join if they're less than half a row width apart sideways, even when that's more than the usual join allows. `report.json` counts them per block (`head_on_joins`).
+- **Row ends.** A row ends where its own direction meets the boundary, at any angle. Its last step doesn't turn, because the template there is half outside the block.
+
 ### Missing-row estimate
 
 ```toml
