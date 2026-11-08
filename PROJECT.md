@@ -325,6 +325,13 @@ Every threshold named here is an `[reconstruction]` or `[seeds]` config key and 
    Growth always terminates.
 6. **Sections.** Rows are clipped to the block polygon and split into connected sections. An endpoint within the validation tolerance of the boundary is *boundary*; any other endpoint keeps its growth state.
 
+### Smoothing (2026-11-08)
+
+`[smoothing]` (on by default, `max_turn_deg = 20`), implemented in `tools/reconstruction/smoothing.py`, caps the direction change between consecutive row vertices.
+- **Rule.** While any interior vertex turns more than the limit, the sharpest one is removed. The ends are never removed, and a merged segment counts as bridged if either part was.
+- **When.** It runs on the grown rows before clipping, and again, through `clean_line`, on the final clipped and snapped rows. The second pass also first drops vertices less than 1 cm from a neighbour, whose tiny segments have no meaningful direction. It applies to estimated rows too.
+- **Join fix.** At the source of the worst kinks, a join now drops the start of the absorbed piece that lies behind the joining tip. The join accepts an end up to `join_distance_frac` × d behind, and connecting to it used to make the line step back and forward again.
+
 ### Missing-row estimate (optional, 2026-11-08)
 
 `[missing_row_estimate]`, implemented in `tools/reconstruction/missing.py`, adds rows the image did not show. Its purpose is to reduce the manual drawing left over from detection errors that cannot be eliminated; it does not improve detection.
@@ -630,6 +637,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 26. **Config files named after their settings** (user). `configs/bordeaux.toml` became `configs/centroid-pretest.toml`, so no config name refers to the git-ignored imagery. Variants build on it with a new top-level key, `extends = "other.toml"`: `centroid-pretest-cache.toml` (kernel cache on) and `full-search.toml` (pre-test off). The kernel cache is now off by default, so each file's name says what it turns on.
 27. **Missing-row estimate** (user; `[missing_row_estimate]`, §10). Fills gaps between complete neighbouring rows with rows interpolated every 5 × the median row width. It forces `drop_hanging_rows` on. Config `centroid-pretest-cache-row-estimate.toml`. Bordeaux result in §18.
 28. **Estimate tolerances are settings** (user). `gap_tolerance_frac` (default 0.50, first 0.10: too tight for drifting rows), `whole_row_tolerance_frac` (default 0.20) and `max_missing_rows` (default 3) are all in `[missing_row_estimate]`.
+29. **Row smoothing** (user; `[smoothing]`, §10). Rows came out jagged: 28 vertices doubled back (turns over 90°, up to 177°) where row pieces were joined, and 121 turned more than 20°. Joins no longer step back, and a maximum direction change between vertices (20° by default) is enforced on the final rows. Results in §18.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -823,3 +831,17 @@ Runs `runs/20261108-121223-pretest-cold` (kernel cache empty) and `runs/20261108
 - **Width correction.** Block 6's raw median distance (2.21 m) spans more than one row interval, because it lost most of its rows to hanging-row deletion. The interval-corrected width (1.40 m) matches the search spacing.
 - **Placement.** On the overlay the estimated rows fall evenly between the detected rows.
 - **Evidence.** The template score along estimated rows (median 0.41) is not near zero, because four of the template's five lines sit on the real neighbouring rows.
+
+### Row smoothing on Bordeaux (2026-11-08)
+
+Same config (`centroid-pretest-cache-row-estimate.toml`), before (`runs/20261108-132900-row-estimate-50`) and after (`runs/20261108-143124-smoothing-final`, 57 s):
+
+| Vertex turns in rows.shp | Before | After |
+| --- | ---: | ---: |
+| over 20° | 121 | 0 |
+| over 45° | 46 | 0 |
+| over 90° (line doubles back) | 28 | 0 |
+| sharpest | 177° | 20.0° |
+
+Rows, row length and estimates are unchanged (306 rows, 19.8 km, 46 estimated). 85 vertices were removed before clipping. The worst former kink, a hairpin at a join, is now a straight line with a slight bend.
+

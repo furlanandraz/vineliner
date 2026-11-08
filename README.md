@@ -155,6 +155,20 @@ For each block:
 
 `blocks.shp` records each block's search mode and pre-test (`search`, `pt_theta`, `pt_spacing`, `pt_score`, `pt_ring`, `pt_reason`). The GeoPackage layer `pretests` marks the box each pre-test came from. The log warns when many grid winners sit on the edge of the rotation window, which means the pre-test was probably off.
 
+### Smoothing
+
+```toml
+[smoothing]
+enabled = true      # on by default
+max_turn_deg = 20.0 # the largest direction change allowed between consecutive vertices
+```
+
+While any vertex of a row turns by more than `max_turn_deg`, the sharpest one is removed, worst first. The two end vertices are never removed, so rows keep ending on the boundary. Bridged segments stay marked as bridged.
+
+It runs on the grown rows and again on the final clipped rows, so the limit holds on the output. It also applies to estimated rows. With vertices about 1 m apart, 20° is a curve radius of about 2.9 m, so real curves within the 5–10 m radius assumption are kept.
+
+Joins also no longer step backwards: when a row piece joins one that starts slightly behind its tip, the overlapping start is dropped.
+
 ### Missing-row estimate
 
 ```toml
