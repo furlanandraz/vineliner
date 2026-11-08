@@ -76,6 +76,7 @@ class TemplateSettings:
 class KernelSettings:
     coverage: str
     subpixel_samples: int | None
+    cache_dir: Path | None = None  # None: build kernels every run
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,16 @@ class ScoringSettings:
     normalisation: str
     min_valid_coverage: float
     unavailable_bands: str
+
+
+@dataclass(frozen=True)
+class CentroidPretestSettings:
+    """Centroid pre-test (tools/search/pretest.py)."""
+
+    enabled: bool
+    theta_window_deg: float
+    spacing_window_frac: float
+    neighbour_rings: int
 
 
 @dataclass(frozen=True)
@@ -170,6 +181,7 @@ class RunSettings:
     rotation: RotationSettings
     translation: TranslationSettings
     centre_spacing_m: float
+    centroid_pretest: CentroidPretestSettings
     scoring: ScoringSettings
     selection: SelectionSettings
     seed_lines: tuple[int, ...]
@@ -221,6 +233,8 @@ class RunSettings:
         # [kernels]
         coverage = r.get("kernels", "coverage", choices=COVERAGE_METHODS)
         samples = r.get("kernels", "subpixel_samples", _REQUIRED if coverage == "sampled" else None, kind=int)
+        use_cache = r.get("kernels", "cache", False, kind=bool)
+        cache_dir = r.get("kernels", "cache_dir", ".cache/kernels", kind=str)
 
         # [spacing], [rotation], [translation], [centres]
         nominal = r.get("spacing", "nominal_m", kind=float)
@@ -231,6 +245,10 @@ class RunSettings:
         box = r.get("translation", "box", choices=TRANSLATION_BOXES)
         order = r.get("translation", "order", "centre_outward", choices=("centre_outward",))
         centre_spacing = r.get("centres", "spacing_m", kind=float)
+        pt_enabled = r.get("centroid_pretest", "enabled", False, kind=bool)
+        pt_theta = r.get("centroid_pretest", "theta_window_deg", 10.0, kind=float)
+        pt_spacing = r.get("centroid_pretest", "spacing_window_frac", 0.10, kind=float)
+        pt_rings = r.get("centroid_pretest", "neighbour_rings", 3, kind=int)
 
         # [scoring], [seeds]
         accept_min = r.get("scoring", "accept_min", kind=float)
@@ -283,6 +301,8 @@ class RunSettings:
             problems.append("[rotation] needs start_deg < stop_deg and step_deg > 0")
         if centre_spacing <= 0:
             problems.append("[centres] spacing_m must be > 0")
+        if pt_theta < 0 or pt_spacing < 0 or pt_rings < 0:
+            problems.append("[centroid_pretest] windows and neighbour_rings must be >= 0")
         if val[0] > val[1]:
             problems.append("[validation] spacing_min_m is above spacing_max_m")
         if nir is not None and nir_bands is not None and len(set(nir_bands)) != len(nir_bands):
@@ -331,12 +351,15 @@ class RunSettings:
                 line_length_m=line_length,
                 band_width_px=band_width,
             ),
-            kernels=KernelSettings(coverage=coverage, subpixel_samples=samples),
+            kernels=KernelSettings(coverage=coverage, subpixel_samples=samples, cache_dir=resolve_path(cache_dir) if use_cache else None),
             spacing=spacing,
             spacing_nominal_m=nominal,
             rotation=RotationSettings(*rot),
             translation=TranslationSettings(box=box, order=order),
             centre_spacing_m=centre_spacing,
+            centroid_pretest=CentroidPretestSettings(
+                enabled=pt_enabled, theta_window_deg=pt_theta, spacing_window_frac=pt_spacing, neighbour_rings=pt_rings
+            ),
             scoring=ScoringSettings(
                 accept_min=accept_min,
                 normalisation=normalisation,

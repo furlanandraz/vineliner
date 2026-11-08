@@ -1,10 +1,16 @@
-# Bordeaux test pair in dof/bordeaux/ with hand-drawn blocks in poly/poly.gpkg
-# (PROJECT.md §14). Merged on top of configs/default.toml; only the keys that
-# differ are set here.
+# Centroid pre-test, kernels built every run.
+#
+# The full settings for the first test data: the RGB/NIR/NDVI rasters in
+# dof/bordeaux/ (git-ignored, see PROJECT.md §14) with the hand-drawn blocks in
+# poly/poly.gpkg. Merged on top of configs/default.toml.
+#
+# Variants that extend this file:
+#   centroid-pretest-cache.toml   the same, with the kernel cache on
+#   full-search.toml              the same, without the pre-test (the agreed baseline)
 #
 # Keys marked PICK are first-run experimental choices for OPEN items
 # (PROJECT.md §15), chosen 2026-11-07. They are starting points to compare,
-# not validated values.
+# not validated values. (This file was configs/bordeaux.toml until 2026-11-08.)
 
 [input]
 rgb = "dof/bordeaux/rgb.tif"
@@ -36,6 +42,9 @@ ndvi_weight = 0.0               # PICK: tested 2026-11-07 (PROJECT.md §18). At 
                                 # the RGB at 0.2 m. To try it: ndvi_weight = 0.3, ndvi_method = "stretch".
 ndvi_method = "stretch"         # used only when ndvi_weight > 0
 
+[kernels]
+cache = false                   # kernels are built every run; centroid-pretest-cache.toml turns the cache on
+
 [template]
 line_length_m = 2.0             # PICK: longer than 1 m for a steadier 1-degree orientation estimate
 band_width_px = 3               # PICK: about the width of a row stripe in the evidence (0.6-0.8 m).
@@ -57,6 +66,10 @@ box = "nominal_d0"              # PICK: every spacing gets the same 7 x 7 transl
 
 [centres]
 spacing_m = 2.0                 # PICK: ~1.4 rows apart; with seed lines -1..1 every row gets seeds
+
+[centroid_pretest]
+enabled = true                  # user request (2026-11-08): centroid pre-test, then a narrowed grid search;
+                                # windows and neighbour rings as in default.toml
 
 [scoring]
 normalisation = "renormalise_valid"  # PICK: missing pixels are not read as soil

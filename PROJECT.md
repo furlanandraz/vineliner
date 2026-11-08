@@ -187,6 +187,18 @@ Place centres on pixel centres of the analysis raster, so that the template cent
 
 Search theta = 0, 1, ..., 179 degrees: 180 options at a 1-degree increment.
 
+### Centroid pre-test (optional, 2026-11-08)
+
+The user's proposal for a cheaper search is `[centroid_pretest]`, implemented in `tools/search/pretest.py`. It was first called "blueprint".
+- **Centroid box.** If a block's centroid lies inside its polygon, one search box on the centroid pixel is searched in full: every translation, all rotations and all spacings.
+- **Neighbour backup.** If the centroid box is weak (best S below accept_min, or its pixel is invalid), rings of neighbouring boxes are tested the same way, ring by ring, spaced like the grid centres (`neighbour_rings`, default 3). The first ring with an accepted box wins; within it, the highest score.
+- **Pre-test.** The winning box gives the block's pre-test direction θ_pt and spacing d_pt. No assumption is made that the centre has the best data.
+- **Grid search.** The grid search keeps every translation (phase) at every centre, but only rotations within `theta_window_deg` of θ_pt (default ±10°) and spacings within `spacing_window_frac` × d_pt (default ±10%).
+- **Fallback.** The block gets the full grid search when the centroid is outside the polygon (the user's rule), or when no box within `neighbour_rings` is accepted.
+- **Outputs.** Restricted searches report global rotation and spacing indices; unsearched ones are NaN in the profiles. A window-edge share is reported per block: the share of grid winners on the edge of the rotation window, which signals a pre-test that was off.
+
+The full grid search remains the default (`enabled = false`) and the agreed baseline.
+
 ### Spacing variation
 
 Spacing (row width, §6) hypotheses come from a predetermined, user-configured range: d_min, d_max and step, fixed before the run. The range is not adapted to the image during a run. Both endpoints are included:
@@ -197,7 +209,7 @@ The range is set in the `[spacing]` table of the run configuration as `min_m`, `
 
 The default reproduces the earlier rule of d0 ±10% at 1% of d0. For d0 = 2.0 m that is 1.80, 1.82, …, 2.20 m: 21 options. For the earlier worked example d0 = 2.2 m it is 1.98 through 2.42 m at 0.022 m steps.
 
-Set the range for the target vineyards. The Bordeaux test data appears to have rows about 1.3–1.5 m apart (§14), outside the 2.0 m default range. `configs/bordeaux.toml` therefore searches 1.20–1.60 m at 0.02 m, again 21 options. This search range is separate from the final geometric validation range (§11, §12).
+Set the range for the target vineyards. The Bordeaux test data appears to have rows about 1.3–1.5 m apart (§14), outside the 2.0 m default range. `configs/centroid-pretest.toml` therefore searches 1.20–1.60 m at 0.02 m, again 21 options. This search range is separate from the final geometric validation range (§11, §12).
 
 ### Search size and retained evidence
 
@@ -409,7 +421,9 @@ Revised 2026-11-07 (§17): `src/` holds only entry files. The importable code is
     ├── pyproject.toml            package metadata and dependencies
     ├── configs/
     │   ├── default.toml          agreed defaults (§12); OPEN keys left unset
-    │   └── bordeaux.toml         per-area settings and first-run PICKs (§14, §18)
+    │   ├── centroid-pretest.toml settings and first-run PICKs for the test data (§14, §18)
+    │   ├── centroid-pretest-cache.toml  extends it: kernel cache on
+    │   └── full-search.toml      extends it: pre-test off (the baseline)
     ├── dof/                      orthophoto inputs; *.tif is git-ignored, .gitkeep keeps the folder
     │   └── bordeaux/             first test pair (§14)
     ├── poly/poly.gpkg            hand-drawn Bordeaux blocks, standing in for classification (§4)
@@ -494,8 +508,8 @@ The first test data is not GURS imagery. Its file headers and pixel statistics w
 Observations and cautions:
 
 - The scene contains several vineyard blocks with different row orientations, separated by roads, plus a bare parcel and buildings. That suits the block-separation and orientation tests (§4).
-- Rough row-spacing estimate: about 1.3–1.5 m, roughly 7 pixels, from autocorrelation on five crops. This is unvalidated, and it lies outside the 1.80–2.20 m default spacing range and below the 1.5–2.5 m Slovenian scope assumption. `configs/bordeaux.toml` sets the search range to 1.20–1.60 m and the validation range to the same values as a starting point.
-- **Band order assumption (2026-11-07):** `nir.tif` is a false-colour product with bands NIR, red, green; `rgb.tif` is red, green, blue. The files do not record this. Evidence: `nir.tif` bands 2 and 3 closely track the RGB red and green bands but are not identical (mean absolute difference ≈ 2.3 DN in a sample). The order is set explicitly in `configs/bordeaux.toml` ([input] `rgb_bands`, `nir_bands`), not inferred from array position (§3). It is recorded as an assumption in README.md.
+- Rough row-spacing estimate: about 1.3–1.5 m, roughly 7 pixels, from autocorrelation on five crops. This is unvalidated, and it lies outside the 1.80–2.20 m default spacing range and below the 1.5–2.5 m Slovenian scope assumption. `configs/centroid-pretest.toml` sets the search range to 1.20–1.60 m and the validation range to the same values as a starting point.
+- **Band order assumption (2026-11-07):** `nir.tif` is a false-colour product with bands NIR, red, green; `rgb.tif` is red, green, blue. The files do not record this. Evidence: `nir.tif` bands 2 and 3 closely track the RGB red and green bands but are not identical (mean absolute difference ≈ 2.3 DN in a sample). The order is set explicitly in `configs/centroid-pretest.toml` ([input] `rgb_bands`, `nir_bands`), not inferred from array position (§3). It is recorded as an assumption in README.md.
 - **NoData and outliers (2026-11-07):** 255 is treated as "no data or outlier". Vegetation never reflects that strongly in any band, so 255 values are water glint, white roofs and similar, never row evidence. A pixel is masked when any band of either file equals 255 (`nodata_rule = "any_band"`). Counts on the full scene:
 
   | Band | Pixels at 255 |
@@ -540,7 +554,7 @@ The following remain deliberately open rather than being silently settled by an 
 
 Use small empirical comparisons to choose these. Preserve the user-approved baseline and document changes to scoring or hypothesis coverage.
 
-Every open choice is an unset key in `configs/default.toml`, and a run refuses to start without it. `configs/bordeaux.toml` sets first-run PICKs for all of them, each with its reason. They are listed in §18, and every run's `report.json` repeats them under `open_choices_set_by_this_run`. Two further open choices arose during implementation:
+Every open choice is an unset key in `configs/default.toml`, and a run refuses to start without it. `configs/centroid-pretest.toml` sets first-run PICKs for all of them, each with its reason. They are listed in §18, and every run's `report.json` repeats them under `open_choices_set_by_this_run`. Two further open choices arose during implementation:
 
 - Peak selection (`[selection]`, §9).
 - Seed filtering and chain smoothing (`[seeds] min_band_mean`, `[reconstruction] chain_smoothing_m`, §10).
@@ -575,7 +589,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 4. **Repository set-up.** `src/` layout, `pyproject.toml` with setuptools, pytest, one module per pipeline stage (§13). Imagery (`*.tif`, `*.tiff`) is git-ignored; `dof/.gitkeep` keeps the input folder.
 5. **Row width means row spacing.** "Row width" is the distance between neighbouring rows, where the tractors drive. Rows are reduced to lines and have no width of their own; the template band width w is only a kernel sampling width (§6).
 6. **Spacing range in the config.** Users set the searched spacing range in `[spacing]` (`min_m`, `max_m`, `step_m`) of a per-area config merged over `configs/default.toml`. `vineliner.config` loads, merges and validates it (§7). The Bordeaux range is 1.20–1.60 m at 0.02 m.
-7. **Bordeaux band order assumed.** `nir.tif` is NIR, red, green and `rgb.tif` is red, green, blue, set in `configs/bordeaux.toml` and recorded in README.md (§14).
+7. **Bordeaux band order assumed.** `nir.tif` is NIR, red, green and `rgb.tif` is red, green, blue, set in `configs/centroid-pretest.toml` and recorded in README.md (§14).
 8. **255 is NoData or outlier on the Bordeaux pair.** Vegetation never reaches 255, so 255 values are water, white roofs and similar. A pixel is masked when any band of either file is 255: 955 pixels, 0.024% (§14).
 9. **Layout: entry files in `src/`, importable modules in `tools/`.** Supersedes the `src/vineliner/` layout of item 4. Subpackages are nested by stage; internal imports are relative, so `tools/` can move into a future QGIS plugin; file formats are confined to `tools/io/` and `tools/export/` (§13).
 10. **Block polygons from `poly/poly.gpkg`.** The user supplied 7 hand-drawn Bordeaux blocks in the raster's own CRS. Automatic classification stays unimplemented; reports call the polygons a fixture (§4).
@@ -583,7 +597,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 12. **Peak selection becomes an explicit option.** `[selection] method` = `best` or `orientation_consensus` (§9). It was added because a 2 m template separates neighbouring rotations weakly: in block 0, 17% of raw winners were off the 40° rows, scoring barely above the 40° hypothesis at the same centre. All hypotheses are still scored and the raw winner is still reported.
 13. **Seed filter and chain smoothing.** Two new open keys: `[seeds] min_band_mean`, a line's own evidence needed to seed, and `[reconstruction] chain_smoothing_m` (§10).
 14. **Score storage modes.** `all`, `winning_spacing` or `none` (§13). Bordeaux uses `winning_spacing`, because `all` would be about 5.9 GB per run.
-15. **First-run PICKs for Bordeaux** are recorded in `configs/bordeaux.toml` and §18. They include two changes found by trial on block 0, recorded there:
+15. **First-run PICKs for Bordeaux** are recorded in `configs/centroid-pretest.toml` and §18. They include two changes found by trial on block 0, recorded there:
     - Translation box `nominal_d0` instead of `tested_d`. With `tested_d`, d = 1.60 m gets 64 translations against 49 for the other spacings, and the larger max pulled 10% of centres onto that range edge.
     - Band width 3 px instead of 1. A 1 px band scores flat across a 3–4 px row stripe, so neighbouring centres placed one row up to 0.6 m apart.
 16. **Evidence scaled per block** (`[evidence] scale_region`, open; Bordeaux PICK `per_block`). Scaling over all blocks let the high-contrast block 1 set the scale: block 0 accepted 234 centres in the full run but 545 when run alone. Per-block scaling makes a block's result independent of the other blocks in the run.
@@ -594,9 +608,16 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 21. **Reference rows deferred** (user). Accuracy against hand-digitised rows (§11) waits until the user has reviewed the outputs.
 22. **Optional removal of hanging rows** (user; `[export] drop_hanging_rows`, default `false`). When on, a row is kept only if it meets its block boundary at exactly two points, its two ends: both ends within the validation tolerance of the boundary, and no other contact. All other rows are removed before the checks, so the kept rows' attributes describe the cleaned set. The removed rows are written to `removed.shp` with the attributes they had among all rows. This is for poor imagery: keep only probably-accurate rows and add the rest by hand.
 
+### 2026-11-08
+
+23. **Centroid pre-test** (user proposal; `[centroid_pretest]`, §7; first called "blueprint"). A full search of one box at each block's centroid narrows the grid search to ±10° and ±10% around its winner, keeping every phase. The full grid search is used when the centroid is outside the polygon. On for Bordeaux on the `feature/centroid-blueprint` branch; results in §18.
+24. **Neighbouring boxes back up a weak centroid box** (user). Rings of neighbouring boxes, spaced like the grid centres and up to `neighbour_rings`, are tried before falling back to the full grid search.
+25. **Kernel cache** (user). Kernels are saved to `.cache/kernels/` under a key of everything they depend on (template geometry, rotations, spacings, pixel size, coverage method, cache format version) and reused by later runs (`[kernels] cache`, `cache_dir`). Off by default; on in `configs/centroid-pretest-cache.toml`.
+26. **Config files named after their settings** (user). `configs/bordeaux.toml` became `configs/centroid-pretest.toml`, so no config name refers to the git-ignored imagery. Variants build on it with a new top-level key, `extends = "other.toml"`: `centroid-pretest-cache.toml` (kernel cache on) and `full-search.toml` (pre-test off). The kernel cache is now off by default, so each file's name says what it turns on.
+
 ## 18. First Bordeaux results (2026-11-07)
 
-These are the first experimental results, from `configs/bordeaux.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
+These are the first experimental results, from `configs/centroid-pretest.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
 
 **Search size.**
 - 7,947 search centres at 2 m spacing.
@@ -617,7 +638,7 @@ These are the first experimental results, from `configs/bordeaux.toml` on the 7 
 | `scoring.normalisation`, `min_valid_coverage`, `unavailable_bands` | `renormalise_valid`, 0.5, `renormalise` | Missing pixels are not read as soil; edge templates not penalised |
 | `selection.method` | `orientation_consensus`, 6 m, ±5° | 17% of raw winners were off-angle in block 0 |
 | `seeds.lines`, `min_band_mean` | [−1, 0, 1], 0.4 | Inner lines seed neighbouring rows; drops lines on inter-row soil |
-| `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `bordeaux.toml` |
+| `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `centroid-pretest.toml` |
 | `validation.tolerance_m` | 0.3 | Well inside the ~1 m target |
 | `storage.surfaces` | `winning_spacing` | `all` would be about 5.9 GB per run |
 
@@ -700,3 +721,69 @@ This run uses the same settings, plus the user decisions §17 items 18–20:
 | 6 | 56 | 0 / 11 / 45 | 49 |
 
 Blocks 1 and 4 need little or no review. In blocks 3, 5 and 6 the flags concentrate in faint patches, and those flags are the work list for the user's review of the product.
+
+### Centroid pre-test against the full search (2026-11-08, first version without neighbour backup)
+
+The same Bordeaux settings were run with and without the pre-test (then called `[blueprint]`), one after the other on the same machine:
+`runs/20261108-115437-cmp-blueprint` and `runs/20261108-115610-cmp-full`.
+
+| | Blueprint | Full search |
+| --- | ---: | ---: |
+| Total run time | 92 s | 362 s |
+| Search time | 50 s | 319 s |
+| Template scores | 0.37 billion | 1.47 billion |
+| Rows | 408 | 413 |
+| Row length | 22.8 km | 22.9 km |
+| high / medium / low | 103 / 132 / 173 | 100 / 131 / 182 |
+| Dangling ends | 165 | 176 |
+
+| Block | Mode | Blueprint | Hypotheses per centre | Search s (bp / full) | Rows (bp / full) | Row length agreeing* |
+| ---: | --- | --- | ---: | ---: | ---: | ---: |
+| 0 | blueprint | 41°, 1.44 m, S 0.64 | 15,435 | 2.2 / 28.2 | 50 / 50 | 99% |
+| 1 | blueprint | 72°, 1.38 m, S 0.59 | 13,377 | 2.7 / 40.9 | 77 / 77 | 100% |
+| 2 | full | centroid box S 0.39 < 0.50 | 185,220 | 13.9 / 15.2 | 55 / 55 | 100% |
+| 3 | blueprint | 36°, 1.52 m, S 0.74 | 12,348 | 3.5 / 159.5 | 67 / 72 | 98–99% |
+| 4 | blueprint | 62°, 1.42 m, S 0.60 | 15,435 | 1.3 / 13.7 | 33 / 33 | 100% |
+| 5 | blueprint | 76°, 1.46 m, S 0.56 | 15,435 | 3.3 / 39.9 | 70 / 70 | 100% |
+| 6 | full | centroid box S 0.45 < 0.50 | 185,220 | 22.7 / 21.8 | 56 / 56 | 100% |
+
+\* Share of one run's row length lying within 0.3 m of the other run's rows, both ways.
+
+- **Speed.** The blueprint search is about 12 times cheaper per centre. The run as a whole is 3.9 times faster.
+- **Remaining time.** It is now mostly the 20 s kernel build and the two fallback blocks.
+- **Accuracy.** Results agree with the full search to within 0.3 m along 98–100% of row length.
+- **Block 3.** The blueprint direction (36°) differs from the block's median direction (40°) but lies well inside the window. Only 1.8% of the grid winners sat on the window edge.
+- **Fallback blocks.** Blocks 2 and 6 fell back because their centroid boxes landed on weak data.
+
+### Centroid pre-test with neighbour backup and kernel cache (2026-11-08)
+
+Runs `runs/20261108-121223-pretest-cold` (kernel cache empty) and `runs/20261108-121327-pretest-warm` (cache filled) are compared with the full search `runs/20261108-115610-cmp-full` from the comparison above. The full-search code is unchanged since then.
+
+| | Pre-test, cold cache | Pre-test, warm cache | Full search |
+| --- | ---: | ---: | ---: |
+| Total run time | 63 s | 41 s | 362 s |
+| Kernels | 20.3 s (built, saved) | 0.1 s (loaded) | 20 s (built) |
+| Search time | 17 s | 17 s | 319 s |
+| Template scores | 0.11 billion | 0.11 billion | 1.47 billion |
+| Rows | 407 | 407 | 413 |
+| Row length | 22.8 km | 22.8 km | 22.9 km |
+| high / medium / low | 102 / 135 / 170 | 102 / 135 / 170 | 100 / 131 / 182 |
+| Dangling ends / crossings | 164 / 0 | 164 / 0 | 176 / 2 |
+
+| Block | Pre-test from | Direction, spacing, S | Search s (pre-test / full) | Rows (pre-test / full) | Row length agreeing* |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 0 | centroid box | 41°, 1.44 m, 0.64 | 2.5 / 28.2 | 50 / 50 | 99% |
+| 1 | centroid box | 72°, 1.38 m, 0.59 | 2.7 / 40.9 | 77 / 77 | 100% |
+| 2 | ring-1 box (9 tested) | 43°, 1.38 m, 0.64 | 1.5 / 15.2 | 56 / 55 | 97–98% |
+| 3 | centroid box | 36°, 1.52 m, 0.74 | 3.4 / 159.5 | 67 / 72 | 98–99% |
+| 4 | centroid box | 62°, 1.42 m, 0.60 | 1.5 / 13.7 | 33 / 33 | 100% |
+| 5 | centroid box | 76°, 1.46 m, 0.56 | 3.4 / 39.9 | 70 / 70 | 100% |
+| 6 | ring-1 box (9 tested) | 42°, 1.40 m, 0.56 | 2.3 / 21.8 | 54 / 56 | 99% |
+
+\* Share of one run's row length within 0.3 m of the other run's rows, both ways.
+
+- **Neighbour backup.** Blocks 2 and 6, which fell back to the full search without it, now take their pre-test from a neighbouring box one ring out.
+- **Speed.** The search is 19 times faster than the full search. With a warm kernel cache the whole run is 8.8 times faster.
+- **Remaining time.** It is now mostly growth, the checks and export, about 20 s.
+- **Accuracy.** Results agree with the full search to within 0.3 m along 97–100% of row length.
+

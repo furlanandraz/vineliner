@@ -107,7 +107,9 @@ class KernelBank:
         py: float,
         coverage: str,
         subpixel_samples: int | None = None,
+        kernels: list[list[list[Kernel]]] | None = None,
     ):
+        """kernels: prebuilt kernels[t][j][band] (e.g. from cache.py); built here when None."""
         self.template = template
         self.thetas = tuple(thetas)
         self.spacings = tuple(spacings)
@@ -115,16 +117,19 @@ class KernelBank:
         self.coverage = coverage
         self.subpixel_samples = subpixel_samples
         K = len(template.indices)
-        self._kernels: list[list[list[Kernel]]] = []
-        for theta in self.thetas:
-            centre_kernel = rasterise_band(template, theta, self.spacings[0], 0, px, py, coverage, subpixel_samples)
-            per_theta = []
-            for d in self.spacings:
-                per_theta.append([
-                    centre_kernel if k == 0 else rasterise_band(template, theta, d, k, px, py, coverage, subpixel_samples)
-                    for k in template.indices
-                ])
-            self._kernels.append(per_theta)
+        if kernels is not None:
+            self._kernels = kernels
+        else:
+            self._kernels = []
+            for theta in self.thetas:
+                centre_kernel = rasterise_band(template, theta, self.spacings[0], 0, px, py, coverage, subpixel_samples)
+                per_theta = []
+                for d in self.spacings:
+                    per_theta.append([
+                        centre_kernel if k == 0 else rasterise_band(template, theta, d, k, px, py, coverage, subpixel_samples)
+                        for k in template.indices
+                    ])
+                self._kernels.append(per_theta)
         self.n_bands = K
         self.radius = max(kern.radius for per_theta in self._kernels for per_d in per_theta for kern in per_d)
 
@@ -136,15 +141,20 @@ class KernelBank:
         """(n_theta, n_bands) total kernel weight for spacing index j."""
         return np.array([[kern.total for kern in self._kernels[t][j]] for t in range(len(self.thetas))])
 
-    def packed(self, j: int):
-        """Concatenate all kernels of spacing j: (drow, dcol, weight, segment), segment = t * n_bands + band."""
+    def packed(self, j: int, theta_idx=None):
+        """Concatenate the kernels of spacing j: (drow, dcol, weight, segment).
+
+        theta_idx limits the rotations (default: all). segment = local * n_bands + band,
+        where local is the position of the rotation in theta_idx.
+        """
+        theta_idx = range(len(self.thetas)) if theta_idx is None else theta_idx
         drow, dcol, weight, seg = [], [], [], []
-        for t in range(len(self.thetas)):
+        for local, t in enumerate(theta_idx):
             for b, kern in enumerate(self._kernels[t][j]):
                 drow.append(kern.drow)
                 dcol.append(kern.dcol)
                 weight.append(kern.weight)
-                seg.append(np.full(kern.weight.size, t * self.n_bands + b, dtype=np.int64))
+                seg.append(np.full(kern.weight.size, local * self.n_bands + b, dtype=np.int64))
         return np.concatenate(drow), np.concatenate(dcol), np.concatenate(weight), np.concatenate(seg)
 
     def provenance(self) -> dict:

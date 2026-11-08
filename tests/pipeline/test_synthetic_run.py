@@ -47,13 +47,36 @@ def run_dropping(tmp_path_factory):
     return _run(tmp_path_factory.mktemp("synthetic_drop"), overrides)
 
 
-def _run(tmp, overrides):
+PRETEST = {"centroid_pretest": {"enabled": True, "theta_window_deg": 5.0, "spacing_window_frac": 0.05, "neighbour_rings": 3}}
+
+
+@pytest.fixture(scope="module")
+def run_pretest(tmp_path_factory):
+    """Centroid pre-test on, without the faint patch (which covers the block centroid)."""
+    return _run(tmp_path_factory.mktemp("synthetic_pretest"), PRETEST, patch=False)
+
+
+@pytest.fixture(scope="module")
+def run_pretest_bad_centre(tmp_path_factory):
+    """Pre-test on, with the faint patch over the centroid: a neighbouring box has to stand in."""
+    return _run(tmp_path_factory.mktemp("synthetic_pretest_patch"), PRETEST)
+
+
+@pytest.fixture(scope="module")
+def run_pretest_no_neighbours(tmp_path_factory):
+    """As above but without neighbouring boxes: the block falls back to the full search."""
+    no_rings = {"centroid_pretest": dict(PRETEST["centroid_pretest"], neighbour_rings=0)}
+    return _run(tmp_path_factory.mktemp("synthetic_pretest_no_rings"), no_rings)
+
+
+def _run(tmp, overrides, patch=True):
     from pyproj import CRS
 
     crs = CRS.from_epsg(3794)
     grid = synthetic_grid(crs.to_wkt())
     V = stripe_evidence(grid, half_width=0.3)
-    V[_patch_mask(grid)] = 0  # a faint patch with no visible rows, to be bridged
+    if patch:
+        V[_patch_mask(grid)] = 0  # a faint patch with no visible rows, to be bridged
     rng = np.random.default_rng(0)
     gray = 200 - 110 * V + rng.normal(0, 8, V.shape)  # dark rows on bright soil, with noise
     rgb = np.clip(np.stack([gray, gray, gray]), 0, 254).astype(np.uint8)
@@ -67,6 +90,7 @@ def _run(tmp, overrides):
     gpd.GeoDataFrame({"id": [7]}, geometry=[block], crs=crs).to_file(gpkg)
     cfg = merge(load_config(), CONFIG)
     cfg = merge(cfg, {"input": {"rgb": str(tif)}, "vineyards": {"source": str(gpkg), "id_field": "id"}})
+    cfg = merge(cfg, {"kernels": {"cache": True, "cache_dir": str(tmp / "kernel_cache")}})  # test kernels stay out of the project
     cfg = merge(cfg, overrides)
     result = run_pipeline(cfg, run_dir=tmp / "run", log=lambda *_: None)
     return result, block
@@ -176,6 +200,43 @@ def test_drop_hanging_rows_keeps_only_rows_meeting_the_boundary_twice(run_droppi
     assert "completion" not in set(issues.check)
     blocks = gpd.read_file(result.run_dir / "shapefiles" / "blocks.shp")
     assert int(blocks.removed.iloc[0]) == totals["removed_hanging"]
+
+
+def test_weak_centroid_box_is_backed_up_by_a_neighbour(run_pretest_bad_centre):
+    result, block = run_pretest_bad_centre
+    pt = result.report["blocks"][0]["centroid_pretest"]
+    assert result.report["blocks"][0]["search_mode"] == "pretest"
+    assert pt["ring"] >= 1 and pt["boxes_tested"] > 1
+    assert abs(pt["theta_deg"] - SYNTHETIC_THETA) <= 1
+    assert len(result.sections) >= 30
+
+
+def test_without_neighbours_a_weak_centroid_falls_back(run_pretest_no_neighbours):
+    result, _ = run_pretest_no_neighbours
+    report = result.report["blocks"][0]
+    assert report["search_mode"] == "full" and "accept_min" in report["centroid_pretest"]["reason"]
+
+
+def test_pretest_search_finds_the_same_rows_with_fewer_scores(run, run_pretest):
+    full, _ = run
+    pt, block = run_pretest
+    report = pt.report["blocks"][0]
+    assert report["search_mode"] == "pretest" and report["centroid_pretest"]["ring"] == 0
+    assert abs(report["centroid_pretest"]["theta_deg"] - SYNTHETIC_THETA) <= 1
+    assert report["hypotheses_per_centre"] < full.report["blocks"][0]["hypotheses_per_centre"] / 2
+    assert pt.report["totals"]["template_scores"] < full.report["totals"]["template_scores"] / 2
+    for line in _true_rows(block):
+        mid = line.interpolate(0.5, normalized=True)
+        matches = [s for s in pt.sections if s.geometry.distance(mid) < 0.3]
+        assert len(matches) == 1 and matches[0].geometry.hausdorff_distance(line) < 0.5
+    blocks = gpd.read_file(pt.run_dir / "shapefiles" / "blocks.shp")
+    assert blocks.search.iloc[0] == "pretest" and abs(blocks.pt_theta.iloc[0] - SYNTHETIC_THETA) <= 1
+
+
+def test_kernels_are_cached(run):
+    result, _ = run
+    assert result.report["kernels"]["cache"]["cache"].startswith("miss")
+    assert list((result.run_dir.parent / "kernel_cache").glob("kernels_*.npz"))
 
 
 def test_report_lists_open_choices(run):

@@ -41,13 +41,18 @@ from ..search import (
     PointScorer,
     SearchSpace,
     SurfaceStore,
+    run_pretest,
     search_centres,
     select_best,
     select_orientation_consensus,
+    window_edge_share,
 )
-from ..template import KernelBank, Template
+from ..template import Template, load_or_build
 from ..validation import CHECKS, check_block, evidence_along, mean_evidence, review_section, seed_rms, split_hanging
 from ..vineyards import block_mask, make_blocks, pixel_window
+
+
+EDGE_WARNING_SHARE = 0.25  # pre-test window-edge share above which a block is reported as suspect
 
 
 @dataclass
@@ -223,14 +228,19 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     t0 = lap("evidence", t0)
 
     template, space = build_search(settings, inputs.pixel_m)
-    log(f"Building {len(space.thetas) * len(space.spacings) * len(template.indices)} kernels ...")
-    bank = KernelBank(template, space.thetas, space.spacings, inputs.pixel_m, inputs.pixel_m, settings.kernels.coverage, settings.kernels.subpixel_samples)
+    log(f"Kernels: {len(space.thetas) * len(space.spacings) * len(template.indices)} needed ...")
+    bank, kernel_cache = load_or_build(
+        template, space.thetas, space.spacings, inputs.pixel_m, inputs.pixel_m,
+        settings.kernels.coverage, settings.kernels.subpixel_samples, settings.kernels.cache_dir,
+    )
+    log(f"Kernels: {kernel_cache['cache']} ({kernel_cache['seconds']:.1f} s)")
     search = LocalSearch(bank, space, settings.scoring, template.weights, template.centre_position)
     store = SurfaceStore(run_dir / "scores", space, settings.store_surfaces)
     t0 = lap("kernels", t0)
 
     all_centres, all_seeds, all_chains, all_sections, all_issues, all_reviews, all_joins = [], [], [], [], [], [], []
     all_removed, all_removed_reviews = [], []  # hanging rows, when [export] drop_hanging_rows is on
+    all_pretests = []  # when [centroid_pretest] is enabled
     block_reports = []
     centre_profiles = {"centre_id": [], "theta_profile": [], "spacing_profile": []}
     next_id = {"centre": 0, "seed": 0, "chain": 0, "row": 0, "section": 0}
@@ -257,7 +267,25 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             if done == total or done % (batch_size * 8) == 0:
                 log(f"  block {_id}: searched {done}/{total} centres")
 
-        results = search.run(mv, m, rows - r0, cols - c0, batch_size, store.sink(block.id, centre_ids), progress)
+        block_search, pretest = search, None
+        if settings.centroid_pretest.enabled:
+            cp = settings.centroid_pretest
+            pretest = run_pretest(
+                block, grid, M, search, mv, m, (r0, c0), settings.scoring.accept_min,
+                cp.theta_window_deg, cp.spacing_window_frac, settings.centre_spacing_m, cp.neighbour_rings,
+            )
+            all_pretests.append(pretest)
+            if pretest.mode == "pretest":
+                block_search = search.restricted(pretest.theta_idx, pretest.spacing_idx)
+                where = "centroid box" if pretest.ring == 0 else f"ring-{pretest.ring} box ({pretest.boxes_tested} boxes tested)"
+                log(
+                    f"  block {block.id}: pre-test from the {where}: {pretest.theta_deg:.0f} deg, {pretest.spacing_m:.2f} m "
+                    f"(S = {pretest.score:.2f}); grid searches {block_search.n_theta} rotations x {len(block_search.spacing_idx)} spacings"
+                )
+            else:
+                log(f"  block {block.id}: full grid search ({pretest.reason})")
+
+        results = block_search.run(mv, m, rows - r0, cols - c0, batch_size, store.sink(block.id, centre_ids), progress)
         results.rows, results.cols = rows, cols
         t_search = time.perf_counter() - tb
 
@@ -328,6 +356,13 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "accepted_centres": accepted,
             "selection": selection.method,
             "selection_changed_theta": changed,
+            "search_mode": pretest.mode if pretest else "full",
+            "centroid_pretest": pretest.describe(space.thetas, space.spacings) if pretest else None,
+            "pretest_window_edge_share": (
+                window_edge_share(np.asarray(space.thetas)[selection.theta[sel_ok]], pretest, space.thetas, settings.rotation.step_deg)
+                if pretest and sel_ok.any() else None
+            ),
+            "hypotheses_per_centre": block_search.hypotheses_per_centre,
             "theta_median_deg": float(np.median(np.asarray(space.thetas)[selection.theta[sel_ok]])) if sel_ok.any() else None,
             "spacing_median_m": float(np.median(np.asarray(space.spacings)[selection.spacing[sel_ok]])) if sel_ok.any() else None,
             "seeds": len(seeds),
@@ -348,6 +383,13 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             + (f", {len(removed)} hanging rows removed" if settings.export.drop_hanging_rows else "")
             + f" ({time.perf_counter() - tb:.1f} s)"
         )
+
+        edge = block_reports[-1]["pretest_window_edge_share"]
+        if edge is not None and edge > EDGE_WARNING_SHARE:
+            log(
+                f"  block {block.id}: WARNING {100 * edge:.0f}% of accepted centres chose a direction on the edge of the "
+                f"pre-test rotation window; the pre-test may be off. Widen [centroid_pretest] theta_window_deg or turn it off."
+            )
 
         for i in range(rows.size):
             all_centres.append(_centre_record(results, selection, i, int(centre_ids[i]), block.id, space, template, accept_min, cx[i], cy[i]))
@@ -387,6 +429,12 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     if settings.export.drop_hanging_rows:
         shapefiles["removed"] = (all_removed_reviews, [s.geometry for s in all_removed])
     gpkg_layers = dict(shapefiles) | _diagnostic_layers(all_centres, all_seeds, all_chains, all_sections, all_joins)
+    gpkg_layers["pretests"] = (  # the box each block's pre-test came from
+        [{"block": p.block_id, "mode": p.mode, "ring": p.ring, "tested": p.boxes_tested, "reason": p.reason,
+          "theta_deg": p.theta_deg, "spacing_m": p.spacing_m, "score": p.score}
+         for p in all_pretests if p.x is not None],
+        [Point(p.x, p.y) for p in all_pretests if p.x is not None],
+    )
     written = write_outputs(run_dir, grid.crs_wkt, gpkg_layers, shapefiles, settings.export.shapefile, settings.export.geopackage)
     if settings.export.overlay:
         write_overlay(run_dir / "overlay.png", inputs.rasters[0].data, grid, blocks, all_sections, all_reviews, all_issues, removed=all_removed)
@@ -404,7 +452,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "polygons": inputs.polygon_provenance,
         },
         "evidence": evidence_info,
-        "kernels": bank.provenance(),
+        "kernels": bank.provenance() | {"cache": kernel_cache},
         "search": space.describe() | {"centre_spacing_m": settings.centre_spacing_m, "sparse_nnz": search.nnz, "window_radius_px": search.radius},
         "storage": {"mode": store.mode, "files": len(store.files), "bytes_on_disk": store.bytes_written},
         "blocks": block_reports,
@@ -422,6 +470,10 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "drop_hanging_rows": settings.export.drop_hanging_rows,
             "removed_hanging": len(all_removed),
             "removed_hanging_m": round(sum(s.length_m for s in all_removed), 1),
+            "centroid_pretest_enabled": settings.centroid_pretest.enabled,
+            "blocks_by_search_mode": {m: sum(b["search_mode"] == m for b in block_reports) for m in ("pretest", "full")},
+            "template_scores": int(sum(b["centres"] * b["hypotheses_per_centre"] for b in block_reports)),
+            "template_scores_full_search": int(len(all_centres) * space.hypotheses_per_centre()),
             "crossings": sum(1 for f in all_issues if f.check == "cross_row"),
             "issues": {c: sum(b["validation"]["issues"][c] for b in block_reports) for c in CHECKS},
         },

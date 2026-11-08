@@ -4,7 +4,7 @@ import pytest
 
 from tools.config import CONFIG_DIR, SpacingRange, load_config
 
-BORDEAUX = CONFIG_DIR / "bordeaux.toml"
+PRETEST = CONFIG_DIR / "centroid-pretest.toml"
 
 
 def test_default_spacing_range():
@@ -15,8 +15,8 @@ def test_default_spacing_range():
     assert spacings[-1] == 2.20  # both ends searched
 
 
-def test_bordeaux_spacing_range():
-    spacings = SpacingRange.from_config(load_config(BORDEAUX)).values()
+def test_test_data_spacing_range():
+    spacings = SpacingRange.from_config(load_config(PRETEST)).values()
     assert (spacings[0], spacings[-1], len(spacings)) == (1.20, 1.60, 21)
 
 

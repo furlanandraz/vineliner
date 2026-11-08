@@ -38,11 +38,13 @@ class SurfaceStore:
     def sink(self, block_id: int, centre_ids: np.ndarray):
         """Callback for LocalSearch.run that writes each batch of one block."""
 
-        def write(batch_index, centre_slice, surfaces, best_spacing):
+        def write(batch_index, centre_slice, surfaces, best_spacing, theta_idx=None):
             if self.mode == "none":
                 return
             ids = centre_ids[centre_slice]
             arrays = {}
+            if theta_idx is not None:
+                arrays["theta_idx"] = np.asarray(theta_idx)  # rotations along the theta axis
             if self.mode == "all":
                 arrays["centre_ids"] = ids
                 arrays.update({f"S_{j:02d}": s for j, s in surfaces.items()})
@@ -61,7 +63,10 @@ class SurfaceStore:
         return write
 
     def estimate_bytes(self, n_centres: int) -> int:
-        """Uncompressed size of the surfaces this mode keeps for n_centres."""
+        """Uncompressed size of the surfaces this mode keeps for n_centres, for a full search.
+
+        A pre-test-narrowed search stores proportionally less.
+        """
         per_spacing = [len(self.space.thetas) * self.space.n_translations(j) for j in range(len(self.space.spacings))]
         if self.mode == "all":
             return n_centres * sum(per_spacing) * BYTES_PER_SCORE
@@ -75,7 +80,8 @@ class SurfaceStore:
         space = self.space
         manifest = {
             "mode": self.mode,
-            "array": "S_<jj>[centre, theta, iy, ix], float32, NaN where the centre band is unavailable",
+            "array": "S_<jj>[centre, theta, iy, ix], float32, NaN where the centre band is unavailable; "
+                     "the theta axis follows theta_idx (indices into thetas_deg) in each file",
             "thetas_deg": list(space.thetas),
             "spacings_m": list(space.spacings),
             "pixel_size_m": [space.px, space.py],

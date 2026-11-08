@@ -12,6 +12,11 @@ translation are packed into one sparse matrix A_j over a fixed pixel window:
 so a batch of centres is scored with one sparse-dense product per spacing.
 The result equals the direct sums of §6.1 within float32 tolerance.
 
+A search can be restricted to a subset of rotations and spacings (for the
+centroid pre-test, pretest.py). Every translation is still scored. Results
+always use global rotation and spacing indices; unsearched rotations and
+spacings stay NaN in the profiles.
+
 Ties: the winning hypothesis is the highest S; ties go to the smaller spacing
 index, then the lower centre-outward rank, then the lower rotation index.
 """
@@ -59,29 +64,58 @@ class CentreResults:
 
 
 class LocalSearch:
-    def __init__(self, bank: KernelBank, space: SearchSpace, scoring: ScoringSettings, weights, centre_position: int):
+    def __init__(
+        self,
+        bank: KernelBank,
+        space: SearchSpace,
+        scoring: ScoringSettings,
+        weights,
+        centre_position: int,
+        theta_idx=None,
+        spacing_idx=None,
+    ):
+        """theta_idx / spacing_idx: global indices to search (default: all)."""
         self.bank = bank
         self.space = space
         self.scoring = scoring
         self.weights = np.asarray(weights, dtype=np.float32)
         self.centre_position = centre_position
-        self.n_theta = len(space.thetas)
+        self.n_theta_all = len(space.thetas)
+        self.n_spacing_all = len(space.spacings)
+        self.theta_idx = np.arange(self.n_theta_all) if theta_idx is None else np.unique(np.asarray(theta_idx, dtype=np.int64))
+        self.spacing_idx = np.arange(self.n_spacing_all) if spacing_idx is None else np.unique(np.asarray(spacing_idx, dtype=np.int64))
+        if self.theta_idx.size == 0 or self.spacing_idx.size == 0:
+            raise ValueError("a search needs at least one rotation and one spacing")
+        self.n_theta = len(self.theta_idx)  # rotations searched
         self.n_bands = bank.n_bands
-        self.n_spacing = len(space.spacings)
         self.radius = bank.radius + space.max_translation_px()
         self.size = 2 * self.radius + 1
         thetas = np.asarray(space.thetas)
         step = thetas[1] - thetas[0] if len(thetas) > 1 else 180.0
         self.wrap_theta = abs((thetas[-1] + step) - (thetas[0] + 180.0)) < 1e-6
-        self._matrices = [self._matrix(j) for j in range(self.n_spacing)]
-        self._totals = [bank.totals(j).astype(np.float32) for j in range(self.n_spacing)]
+        self._local_theta = np.full(self.n_theta_all, -1, dtype=np.int64)
+        self._local_theta[self.theta_idx] = np.arange(self.n_theta)
+        self._matrices = {int(j): self._matrix(int(j)) for j in self.spacing_idx}
+        self._totals = {int(j): bank.totals(int(j))[self.theta_idx].astype(np.float32) for j in self.spacing_idx}
+
+    def restricted(self, theta_idx, spacing_idx) -> LocalSearch:
+        """A search over a subset of rotations and spacings, sharing kernels and scoring."""
+        return LocalSearch(self.bank, self.space, self.scoring, self.weights, self.centre_position, theta_idx, spacing_idx)
+
+    @property
+    def is_full(self) -> bool:
+        return self.n_theta == self.n_theta_all and len(self.spacing_idx) == self.n_spacing_all
 
     @property
     def nnz(self) -> int:
-        return sum(m.nnz for m in self._matrices)
+        return sum(m.nnz for m in self._matrices.values())
+
+    @property
+    def hypotheses_per_centre(self) -> int:
+        return sum(self.n_theta * self.space.n_translations(int(j)) for j in self.spacing_idx)
 
     def _matrix(self, j: int) -> sparse.csr_matrix:
-        drow, dcol, weight, seg = self.bank.packed(j)
+        drow, dcol, weight, seg = self.bank.packed(j, self.theta_idx)
         ox, oy = self.space.offsets(j)
         iy, ix = np.divmod(self.space.order(j), len(ox))
         t_row = -oy[iy]  # array rows run southward
@@ -95,17 +129,19 @@ class LocalSearch:
         return sparse.csr_matrix((data, (rows, cols)), shape=(n_t * per_t, W * W), dtype=np.float32)
 
     def run(self, mv: np.ndarray, m: np.ndarray, rows: np.ndarray, cols: np.ndarray, batch_size: int = 64, surface_sink=None, progress=None) -> CentreResults:
-        """Score every hypothesis at every centre (rows, cols) of mv = M*V and m = M.
+        """Score every searched hypothesis at every centre (rows, cols) of mv = M*V and m = M.
 
         The arrays must extend at least self.radius pixels beyond every centre.
-        surface_sink(batch_index, centre_slice, surfaces, best_spacing) receives,
-        per spacing j, the full surface S_j[centre, theta, iy, ix] in natural
-        offset order, plus each centre's winning spacing index.
+        surface_sink(batch_index, centre_slice, surfaces, best_spacing, theta_idx)
+        receives, per searched spacing j, the surface S_j[centre, theta, iy, ix] in
+        natural offset order (theta along theta_idx), plus each centre's winning
+        spacing index.
         """
         R = self.radius
         if rows.size and (rows.min() < R or cols.min() < R or rows.max() >= mv.shape[0] - R or cols.max() >= mv.shape[1] - R):
             raise ValueError("centres too close to the array edge; pad the arrays by LocalSearch.radius")
-        N, Th, K, J = len(rows), self.n_theta, self.n_bands, self.n_spacing
+        N, Th, K = len(rows), self.n_theta, self.n_bands
+        ThA, JA = self.n_theta_all, self.n_spacing_all
         out = CentreResults(
             rows=rows,
             cols=cols,
@@ -116,19 +152,20 @@ class LocalSearch:
             best_rank=np.full(N, -1, np.int64),
             best_means=np.full((N, K), np.nan, np.float32),
             best_coverage=np.full((N, K), np.nan, np.float32),
-            theta_profile=np.full((N, Th), -np.inf, np.float32),
-            spacing_profile=np.full((N, J), np.nan, np.float32),
+            theta_profile=np.full((N, ThA), -np.inf, np.float32),
+            spacing_profile=np.full((N, JA), np.nan, np.float32),
             ridge=np.full((N, len(RIDGE_FIELDS)), np.nan, np.float32),
             competing=np.full((N, 3), np.nan, np.float32),
-            theta_spacing=np.full((N, Th), -1, np.int16),
-            theta_offset=np.zeros((N, Th, 2), np.int16),
-            theta_means=np.full((N, Th, K), np.nan, np.float32),
-            theta_coverage=np.full((N, Th, K), np.nan, np.float32),
+            theta_spacing=np.full((N, ThA), -1, np.int16),
+            theta_offset=np.zeros((N, ThA, 2), np.int16),
+            theta_means=np.full((N, ThA, K), np.nan, np.float32),
+            theta_coverage=np.full((N, ThA, K), np.nan, np.float32),
         )
         win_mv = sliding_window_view(mv, (self.size, self.size))
         win_m = sliding_window_view(m, (self.size, self.size))
         best_val = np.full(N, -np.inf, np.float32)
         thetas = np.asarray(self.space.thetas)
+        tglob = self.theta_idx
 
         for batch_index, b0 in enumerate(range(0, N, batch_size)):
             sl = slice(b0, min(N, b0 + batch_size))
@@ -139,7 +176,7 @@ class LocalSearch:
             X[:, C:] = win_m[r, c].reshape(C, -1).T
             surfaces = {}
             cidx = np.arange(C)
-            for j in range(J):
+            for j in (int(j) for j in self.spacing_idx):
                 prod = self._matrices[j] @ X
                 T = prod.shape[0] // (Th * K)
                 num = np.moveaxis(prod[:, :C].reshape(T, Th, K, C), 2, 3)
@@ -150,37 +187,37 @@ class LocalSearch:
                 flat = Sf.reshape(T * Th, C)
                 idx = flat.argmax(axis=0)
                 val = flat[idx, cidx]
-                t_rank, t_theta = np.divmod(idx, Th)
+                t_rank, t_local = np.divmod(idx, Th)
+                ox, oy = self.space.offsets(j)
                 better = val > best_val[sl]
                 gi = np.flatnonzero(better)
                 if gi.size:
                     g = sl.start + gi
                     best_val[g] = val[gi]
                     out.best_spacing[g] = j
-                    out.best_theta[g] = t_theta[gi]
+                    out.best_theta[g] = tglob[t_local[gi]]
                     out.best_rank[g] = t_rank[gi]
-                    out.best_means[g] = means[t_rank[gi], t_theta[gi], gi]
-                    out.best_coverage[g] = cov[t_rank[gi], t_theta[gi], gi]
-                    ox, oy = self.space.offsets(j)
+                    out.best_means[g] = means[t_rank[gi], t_local[gi], gi]
+                    out.best_coverage[g] = cov[t_rank[gi], t_local[gi], gi]
                     nat_iy, nat_ix = np.divmod(self.space.order(j)[t_rank[gi]], len(ox))
                     out.best_offset[g, 0] = ox[nat_ix]
                     out.best_offset[g, 1] = oy[nat_iy]
                 # Best translation per rotation; strict > keeps the smaller spacing on ties.
-                ox, oy = self.space.offsets(j)
                 t_best = Sf.argmax(axis=0)  # (Th, C), lowest rank first on ties
                 v_best = np.take_along_axis(Sf, t_best[None], axis=0)[0]
-                cur = out.theta_profile[sl].T  # (Th, C)
+                cur = out.theta_profile[sl][:, tglob].T  # (Th, C)
                 upd_t, upd_c = np.nonzero(v_best > cur)
                 if upd_t.size:
                     tr = t_best[upd_t, upd_c]
                     g = sl.start + upd_c
-                    out.theta_profile[g, upd_t] = v_best[upd_t, upd_c]
-                    out.theta_spacing[g, upd_t] = j
+                    gt = tglob[upd_t]
+                    out.theta_profile[g, gt] = v_best[upd_t, upd_c]
+                    out.theta_spacing[g, gt] = j
                     nat_iy, nat_ix = np.divmod(self.space.order(j)[tr], len(ox))
-                    out.theta_offset[g, upd_t, 0] = ox[nat_ix]
-                    out.theta_offset[g, upd_t, 1] = oy[nat_iy]
-                    out.theta_means[g, upd_t] = means[tr, upd_t, upd_c]
-                    out.theta_coverage[g, upd_t] = cov[tr, upd_t, upd_c]
+                    out.theta_offset[g, gt, 0] = ox[nat_ix]
+                    out.theta_offset[g, gt, 1] = oy[nat_iy]
+                    out.theta_means[g, gt] = means[tr, upd_t, upd_c]
+                    out.theta_coverage[g, gt] = cov[tr, upd_t, upd_c]
                 out.spacing_profile[sl, j] = np.where(np.isfinite(val), val, np.nan)
                 natural = np.empty_like(S)
                 natural[self.space.order(j)] = S
@@ -194,10 +231,10 @@ class LocalSearch:
                 ox, oy = self.space.offsets(j)
                 ix = int(np.flatnonzero(ox == out.best_offset[g, 0])[0])
                 iy = int(np.flatnonzero(oy == out.best_offset[g, 1])[0])
-                out.ridge[g] = ridge_statistics(surfaces[j][i, t], ox, oy, self.space.px, self.space.py, thetas[t], iy, ix)
+                out.ridge[g] = ridge_statistics(surfaces[j][i, self._local_theta[t]], ox, oy, self.space.px, self.space.py, thetas[t], iy, ix)
                 out.competing[g] = competing_orientations(out.theta_profile[g], thetas, t, self.scoring.accept_min, wrap=self.wrap_theta)
             if surface_sink is not None:
-                surface_sink(batch_index, sl, surfaces, out.best_spacing[sl])
+                surface_sink(batch_index, sl, surfaces, out.best_spacing[sl], tglob)
             if progress is not None:
                 progress(sl.stop, N)
 
