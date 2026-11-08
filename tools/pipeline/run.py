@@ -470,6 +470,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "smoothing_vertices_removed": smoothed_vertices,
             "joins": len(grower.joins),
             "growth_rounds": grower.rounds,
+            "head_on_joins": grower.head_on_joins,
             "sections": len(sections),
             "endpoint_states": endpoint_states,
             "validation": vsummary,
