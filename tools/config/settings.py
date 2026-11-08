@@ -170,6 +170,14 @@ class SmoothingSettings:
 
 
 @dataclass(frozen=True)
+class NumberingSettings:
+    """Row numbering per block (tools/reconstruction/numbering.py)."""
+
+    enabled: bool
+    transect_interval_m: float
+
+
+@dataclass(frozen=True)
 class MissingRowSettings:
     """Missing-row estimate (tools/reconstruction/missing.py)."""
 
@@ -178,6 +186,10 @@ class MissingRowSettings:
     whole_row_tolerance_frac: float  # a filled gap's new spacing must lie this close to the width
     station_factor: float
     max_missing_rows: int
+    merge_pieces: bool = True  # squash detected hanging pieces into estimated rows (squash.py)
+    merge_buffer_frac: float = 0.5  # buffer half-width around an estimated row, as a fraction of the row width
+    merge_min_inside_frac: float = 0.8  # share of a piece that must lie inside the buffer
+    merge_max_angle_deg: float = 10.0  # largest direction difference between piece and estimated row
 
 
 @dataclass(frozen=True)
@@ -210,6 +222,7 @@ class RunSettings:
     review: ReviewSettings
     smoothing: SmoothingSettings
     missing_row_estimate: MissingRowSettings
+    row_numbering: NumberingSettings
     store_surfaces: str
     export: ExportSettings
     raw: dict[str, Any]
@@ -300,6 +313,8 @@ class RunSettings:
         surfaces = r.get("storage", "surfaces", choices=SURFACE_STORAGE)
         export = [r.get("export", k, True, kind=bool) for k in ("shapefile", "geopackage", "overlay")]
         export.append(r.get("export", "drop_hanging_rows", False, kind=bool))
+        num_enabled = r.get("row_numbering", "enabled", False, kind=bool)
+        num_interval = r.get("row_numbering", "transect_interval_m", 10.0, kind=float)
         smooth_enabled = r.get("smoothing", "enabled", True, kind=bool)
         smooth_turn = r.get("smoothing", "max_turn_deg", 20.0, kind=float)
         mre_enabled = r.get("missing_row_estimate", "enabled", False, kind=bool)
@@ -307,6 +322,10 @@ class RunSettings:
         mre_whole = r.get("missing_row_estimate", "whole_row_tolerance_frac", 0.20, kind=float)
         mre_station = r.get("missing_row_estimate", "station_factor", 5.0, kind=float)
         mre_max = r.get("missing_row_estimate", "max_missing_rows", 3, kind=int)
+        mre_merge = r.get("missing_row_estimate", "merge_pieces", True, kind=bool)
+        mre_buf = r.get("missing_row_estimate", "merge_buffer_frac", 0.5, kind=float)
+        mre_inside = r.get("missing_row_estimate", "merge_min_inside_frac", 0.8, kind=float)
+        mre_angle = r.get("missing_row_estimate", "merge_max_angle_deg", 10.0, kind=float)
 
         r.raise_if_failed()
 
@@ -326,6 +345,13 @@ class RunSettings:
             problems.append(f"[seeds] lines {seed_lines} must be template indices {indices}")
         if not 0 < min_cov <= 1:
             problems.append("[scoring] min_valid_coverage must be in (0, 1]")
+        if not 0 < mre_buf <= 1 or not 0 < mre_inside <= 1 or not 0 < mre_angle < 90:
+            problems.append(
+                "[missing_row_estimate] needs 0 < merge_buffer_frac <= 1, 0 < merge_min_inside_frac <= 1 "
+                "and 0 < merge_max_angle_deg < 90"
+            )
+        if num_interval <= 0:
+            problems.append("[row_numbering] transect_interval_m must be > 0")
         if not 0 < smooth_turn < 180:
             problems.append("[smoothing] max_turn_deg must be between 0 and 180")
         if not 0 < mre_tol <= 1 or not 0 < mre_whole <= 0.5 or mre_station <= 0 or mre_max < 1:
@@ -420,7 +446,10 @@ class RunSettings:
             store_surfaces=surfaces,
             export=ExportSettings(*export),
             smoothing=SmoothingSettings(enabled=smooth_enabled, max_turn_deg=smooth_turn),
-            missing_row_estimate=MissingRowSettings(mre_enabled, mre_tol, mre_whole, mre_station, mre_max),
+            row_numbering=NumberingSettings(enabled=num_enabled, transect_interval_m=num_interval),
+            missing_row_estimate=MissingRowSettings(
+                mre_enabled, mre_tol, mre_whole, mre_station, mre_max, mre_merge, mre_buf, mre_inside, mre_angle
+            ),
             raw=config,
             notes=tuple(notes),
         )

@@ -1,7 +1,8 @@
 """Visual overlay of imagery, blocks, rows and review marks (PROJECT.md §13).
 
 Rows are coloured by confidence: green high, amber medium, red low (review),
-cyan for rows added by the missing-row estimate. Bridged parts are white,
+blue for estimated rows rebuilt from squashed pieces, cyan for purely
+estimated rows. Bridged parts are white,
 dangling ends magenta squares, crossings red squares, unfilled row gaps orange
 squares, block outlines blue, removed hanging rows grey.
 """
@@ -26,6 +27,7 @@ COLOURS = {
     "crossing": (255, 0, 0),
     "removed": (110, 110, 110),
     "estimated": (0, 230, 255),
+    "merged": (60, 120, 255),
     "row_gap": (255, 140, 0),
 }
 
@@ -63,7 +65,7 @@ def write_overlay(path: str | Path, rgb: np.ndarray, grid: Grid, blocks, section
     draw_lines(image, grid, [b.polygon.boundary for b in blocks], COLOURS["block"])
     draw_lines(image, grid, [s.geometry for s in removed], COLOURS["removed"])
     conf = {r["id"]: r["conf"] for r in reviews}
-    for level in ("high", "medium", "low", "estimated"):
+    for level in ("high", "medium", "low", "merged", "estimated"):
         draw_lines(image, grid, [s.geometry for s in sections if conf.get(s.id) == level], COLOURS[level])
     draw_lines(image, grid, [s.bridged for s in sections if s.bridged is not None], COLOURS["bridge"])
     draw_points(image, grid, [f.geometry for f in issues if f.check == "completion"], COLOURS["dangling"], size=3)

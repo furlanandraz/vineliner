@@ -158,6 +158,23 @@ whole_row_tolerance_frac = 0.20 # whole-number check: a filled gap's new spacing
                                 # it only rejects gaps near 1.5, 2.5, ... rows. 0.25 or more accepts every gap
 station_factor = 5.0            # interpolation stations every 5 x d along the row
 max_missing_rows = 3            # at most this many rows are added into one gap; wider gaps are only reported
+# Squash: removed hanging pieces that lie on an estimated row are merged into it;
+# the row then follows the detected piece wherever one covers it (conf = merged).
+merge_pieces = true
+merge_buffer_frac = 0.5         # buffer half-width: 0.5 x row width each side catches drift, never the next row
+merge_min_inside_frac = 0.8     # at least 80 % of a piece must lie inside the buffer
+merge_max_angle_deg = 10.0      # and run within 10 deg of the estimated row
+
+[row_numbering]                 # §10: number the rows of each block (row_no in rows.shp)
+# Transects across the rows (through every row's midpoint, plus one every
+# transect_interval_m along the block) give each pair of neighbouring rows the
+# number of row intervals between them; numbers follow from those relations.
+# A missing row leaves a skipped number. A row whose neighbours disagree on its
+# number (e.g. it drifts into the next lane) gets row_no_ok = 0 and review = 1.
+# Numbers increase to the left when facing along the rows (northward for rows
+# running east-west). Works best on complete rows: use it with the estimate.
+enabled = false
+transect_interval_m = 10.0
 
 [export]                        # §13
 shapefile = true
