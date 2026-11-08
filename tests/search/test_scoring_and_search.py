@@ -49,7 +49,7 @@ def test_search_equals_direct_sums(setup):
     grid, mv, m, bank, space, scoring, search = setup
     rows, cols = np.array([150, 120, 60]), np.array([150, 200, 55])
     captured = {}
-    res = search.run(mv, m, rows, cols, batch_size=2, surface_sink=lambda b, sl, s, best: captured.setdefault(b, (sl, s)))
+    res = search.run(mv, m, rows, cols, batch_size=2, surface_sink=lambda b, sl, s, best, tidx: captured.setdefault(b, (sl, s)))
     rng = np.random.default_rng(1)
     for _ in range(25):
         i = int(rng.integers(len(rows)))
