@@ -119,6 +119,28 @@ Run defaults are in [configs/default.toml](configs/default.toml). Settings for o
 
 Settings that PROJECT.md leaves open are unset in the defaults. A run refuses to start until every one of them is set, and it lists all the missing ones at once. In `bordeaux.toml`, each value chosen for an open setting is marked `PICK`, with the reason next to it. These are first-run choices to compare, not validated values. Each run's `report.json` lists them under `open_choices_set_by_this_run`.
 
+### Faster search: centroid pre-test
+
+```toml
+[centroid_pretest]
+enabled = true              # on in configs/bordeaux.toml, off in the defaults
+theta_window_deg = 10.0     # grid rotations within +/- this of the pre-test direction
+spacing_window_frac = 0.10  # grid spacings within +/- 10 % of the pre-test spacing
+neighbour_rings = 3         # rings of neighbouring boxes tried when the centroid box is weak
+```
+
+For each block:
+1. One search box on the polygon's centroid is searched in full: every phase, all 180 rotations and all spacings.
+2. If that box is weak (best score below `accept_min`), rings of neighbouring boxes around it are tested the same way, spaced like the grid centres. The first ring with an accepted box wins.
+3. The winning box's direction and spacing become the block's pre-test. The grid search then still scores every phase at every centre, but only for rotations and spacings within the windows around the pre-test.
+4. A block gets the full grid search when its centroid lies outside the polygon, or when no box within `neighbour_rings` is accepted.
+
+`blocks.shp` records each block's search mode and pre-test (`search`, `pt_theta`, `pt_spacing`, `pt_score`, `pt_ring`, `pt_reason`). The GeoPackage layer `pretests` marks the box each pre-test came from. The log warns when many grid winners sit on the edge of the rotation window, which means the pre-test was probably off.
+
+### Kernel cache
+
+The 18,900 template kernels take about 20 s to build. They're saved to `.cache/kernels/` (git-ignored) and reused by later runs with the same template geometry, rotations, spacings, pixel size and coverage method. Any change to those builds a new set automatically. Turn it off with `[kernels] cache = false`.
+
 ### Row spacing (row width)
 
 Row width means the distance between neighbouring rows: the lane the tractors drive in. Rows themselves are reduced to lines, so they have no width. You choose the range of spacings to search in the `[spacing]` table:

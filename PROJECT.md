@@ -187,6 +187,18 @@ Place centres on pixel centres of the analysis raster, so that the template cent
 
 Search theta = 0, 1, ..., 179 degrees: 180 options at a 1-degree increment.
 
+### Centroid pre-test (optional, 2026-11-08)
+
+The user's proposal for a cheaper search is `[centroid_pretest]`, implemented in `tools/search/pretest.py`. It was first called "blueprint".
+- **Centroid box.** If a block's centroid lies inside its polygon, one search box on the centroid pixel is searched in full: every translation, all rotations and all spacings.
+- **Neighbour backup.** If the centroid box is weak (best S below accept_min, or its pixel is invalid), rings of neighbouring boxes are tested the same way, ring by ring, spaced like the grid centres (`neighbour_rings`, default 3). The first ring with an accepted box wins; within it, the highest score.
+- **Pre-test.** The winning box gives the block's pre-test direction θ_pt and spacing d_pt. No assumption is made that the centre has the best data.
+- **Grid search.** The grid search keeps every translation (phase) at every centre, but only rotations within `theta_window_deg` of θ_pt (default ±10°) and spacings within `spacing_window_frac` × d_pt (default ±10%).
+- **Fallback.** The block gets the full grid search when the centroid is outside the polygon (the user's rule), or when no box within `neighbour_rings` is accepted.
+- **Outputs.** Restricted searches report global rotation and spacing indices; unsearched ones are NaN in the profiles. A window-edge share is reported per block: the share of grid winners on the edge of the rotation window, which signals a pre-test that was off.
+
+The full grid search remains the default (`enabled = false`) and the agreed baseline.
+
 ### Spacing variation
 
 Spacing (row width, §6) hypotheses come from a predetermined, user-configured range: d_min, d_max and step, fixed before the run. The range is not adapted to the image during a run. Both endpoints are included:
@@ -594,6 +606,12 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 21. **Reference rows deferred** (user). Accuracy against hand-digitised rows (§11) waits until the user has reviewed the outputs.
 22. **Optional removal of hanging rows** (user; `[export] drop_hanging_rows`, default `false`). When on, a row is kept only if it meets its block boundary at exactly two points, its two ends: both ends within the validation tolerance of the boundary, and no other contact. All other rows are removed before the checks, so the kept rows' attributes describe the cleaned set. The removed rows are written to `removed.shp` with the attributes they had among all rows. This is for poor imagery: keep only probably-accurate rows and add the rest by hand.
 
+### 2026-11-08
+
+23. **Centroid pre-test** (user proposal; `[centroid_pretest]`, §7; first called "blueprint"). A full search of one box at each block's centroid narrows the grid search to ±10° and ±10% around its winner, keeping every phase. The full grid search is used when the centroid is outside the polygon. On for Bordeaux on the `feature/centroid-blueprint` branch; results in §18.
+24. **Neighbouring boxes back up a weak centroid box** (user). Rings of neighbouring boxes, spaced like the grid centres and up to `neighbour_rings`, are tried before falling back to the full grid search.
+25. **Kernel cache** (user). Kernels are saved to `.cache/kernels/` under a key of everything they depend on (template geometry, rotations, spacings, pixel size, coverage method, cache format version) and reused by later runs (`[kernels] cache`, `cache_dir`).
+
 ## 18. First Bordeaux results (2026-11-07)
 
 These are the first experimental results, from `configs/bordeaux.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
@@ -700,3 +718,69 @@ This run uses the same settings, plus the user decisions §17 items 18–20:
 | 6 | 56 | 0 / 11 / 45 | 49 |
 
 Blocks 1 and 4 need little or no review. In blocks 3, 5 and 6 the flags concentrate in faint patches, and those flags are the work list for the user's review of the product.
+
+### Centroid pre-test against the full search (2026-11-08, first version without neighbour backup)
+
+The same Bordeaux settings were run with and without the pre-test (then called `[blueprint]`), one after the other on the same machine:
+`runs/20261108-115437-cmp-blueprint` and `runs/20261108-115610-cmp-full`.
+
+| | Blueprint | Full search |
+| --- | ---: | ---: |
+| Total run time | 92 s | 362 s |
+| Search time | 50 s | 319 s |
+| Template scores | 0.37 billion | 1.47 billion |
+| Rows | 408 | 413 |
+| Row length | 22.8 km | 22.9 km |
+| high / medium / low | 103 / 132 / 173 | 100 / 131 / 182 |
+| Dangling ends | 165 | 176 |
+
+| Block | Mode | Blueprint | Hypotheses per centre | Search s (bp / full) | Rows (bp / full) | Row length agreeing* |
+| ---: | --- | --- | ---: | ---: | ---: | ---: |
+| 0 | blueprint | 41°, 1.44 m, S 0.64 | 15,435 | 2.2 / 28.2 | 50 / 50 | 99% |
+| 1 | blueprint | 72°, 1.38 m, S 0.59 | 13,377 | 2.7 / 40.9 | 77 / 77 | 100% |
+| 2 | full | centroid box S 0.39 < 0.50 | 185,220 | 13.9 / 15.2 | 55 / 55 | 100% |
+| 3 | blueprint | 36°, 1.52 m, S 0.74 | 12,348 | 3.5 / 159.5 | 67 / 72 | 98–99% |
+| 4 | blueprint | 62°, 1.42 m, S 0.60 | 15,435 | 1.3 / 13.7 | 33 / 33 | 100% |
+| 5 | blueprint | 76°, 1.46 m, S 0.56 | 15,435 | 3.3 / 39.9 | 70 / 70 | 100% |
+| 6 | full | centroid box S 0.45 < 0.50 | 185,220 | 22.7 / 21.8 | 56 / 56 | 100% |
+
+\* Share of one run's row length lying within 0.3 m of the other run's rows, both ways.
+
+- **Speed.** The blueprint search is about 12 times cheaper per centre. The run as a whole is 3.9 times faster.
+- **Remaining time.** It is now mostly the 20 s kernel build and the two fallback blocks.
+- **Accuracy.** Results agree with the full search to within 0.3 m along 98–100% of row length.
+- **Block 3.** The blueprint direction (36°) differs from the block's median direction (40°) but lies well inside the window. Only 1.8% of the grid winners sat on the window edge.
+- **Fallback blocks.** Blocks 2 and 6 fell back because their centroid boxes landed on weak data.
+
+### Centroid pre-test with neighbour backup and kernel cache (2026-11-08)
+
+Runs `runs/20261108-121223-pretest-cold` (kernel cache empty) and `runs/20261108-121327-pretest-warm` (cache filled) are compared with the full search `runs/20261108-115610-cmp-full` from the comparison above. The full-search code is unchanged since then.
+
+| | Pre-test, cold cache | Pre-test, warm cache | Full search |
+| --- | ---: | ---: | ---: |
+| Total run time | 63 s | 41 s | 362 s |
+| Kernels | 20.3 s (built, saved) | 0.1 s (loaded) | 20 s (built) |
+| Search time | 17 s | 17 s | 319 s |
+| Template scores | 0.11 billion | 0.11 billion | 1.47 billion |
+| Rows | 407 | 407 | 413 |
+| Row length | 22.8 km | 22.8 km | 22.9 km |
+| high / medium / low | 102 / 135 / 170 | 102 / 135 / 170 | 100 / 131 / 182 |
+| Dangling ends / crossings | 164 / 0 | 164 / 0 | 176 / 2 |
+
+| Block | Pre-test from | Direction, spacing, S | Search s (pre-test / full) | Rows (pre-test / full) | Row length agreeing* |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 0 | centroid box | 41°, 1.44 m, 0.64 | 2.5 / 28.2 | 50 / 50 | 99% |
+| 1 | centroid box | 72°, 1.38 m, 0.59 | 2.7 / 40.9 | 77 / 77 | 100% |
+| 2 | ring-1 box (9 tested) | 43°, 1.38 m, 0.64 | 1.5 / 15.2 | 56 / 55 | 97–98% |
+| 3 | centroid box | 36°, 1.52 m, 0.74 | 3.4 / 159.5 | 67 / 72 | 98–99% |
+| 4 | centroid box | 62°, 1.42 m, 0.60 | 1.5 / 13.7 | 33 / 33 | 100% |
+| 5 | centroid box | 76°, 1.46 m, 0.56 | 3.4 / 39.9 | 70 / 70 | 100% |
+| 6 | ring-1 box (9 tested) | 42°, 1.40 m, 0.56 | 2.3 / 21.8 | 54 / 56 | 99% |
+
+\* Share of one run's row length within 0.3 m of the other run's rows, both ways.
+
+- **Neighbour backup.** Blocks 2 and 6, which fell back to the full search without it, now take their pre-test from a neighbouring box one ring out.
+- **Speed.** The search is 19 times faster than the full search. With a warm kernel cache the whole run is 8.8 times faster.
+- **Remaining time.** It is now mostly growth, the checks and export, about 20 s.
+- **Accuracy.** Results agree with the full search to within 0.3 m along 97–100% of row length.
+
