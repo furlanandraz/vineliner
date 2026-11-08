@@ -12,6 +12,11 @@ the image supports it and what the checks found, then:
               NOTE_SPACING_FRAC of samples or more); else "high".
   issues      the reasons, in words, for the attribute table.
 
+Rows added by the missing-row estimate (tools/reconstruction/missing.py) get
+estimated = 1, conf = "estimated" and review = 1: they are drawn from their
+neighbours, not seen in the image. Their ev_* fields still show whether the
+image supports them.
+
 Two rows that run too close both measure the same narrow spacing, but usually
 only one is wrong. Narrow samples therefore count towards a row's review flag
 only against a neighbour with stronger evidence along it (higher ev_mean; ties
@@ -36,8 +41,9 @@ NOTE_SPACING_FRAC = 0.05
 ROW_FIELDS = (
     "id", "block", "row_id", "length_m", "theta_deg", "spacing_m", "sp_med_m", "sp_out_pct",
     "bridged_m", "bridge_pct", "ev_mean", "ev_sup_pct", "pos_rms_m", "n_seeds", "n_joins",
-    "start_st", "end_st", "dangling", "crossings", "near_row", "review", "conf", "issues",
+    "start_st", "end_st", "dangling", "crossings", "near_row", "estimated", "review", "conf", "issues",
 )
+CONF_CLASSES = ("high", "medium", "low", "estimated")
 
 
 def mean_evidence(evidence: np.ndarray) -> float | None:
@@ -154,7 +160,18 @@ def review_section(
         "dangling": len(stats.dangling),
         "crossings": stats.crossings,
         "near_row": near_row,
+        "estimated": 0,
         "review": review,
         "conf": conf,
         "issues": "; ".join(reasons + notes)[:254],
     }
+
+
+def mark_estimated(record: dict, section) -> dict:
+    """Label a review record as an estimated row (in place)."""
+    between = next((f for f in section.flags if f.startswith("between rows")), "between neighbouring rows")
+    record["estimated"] = 1
+    record["review"] = 1
+    record["conf"] = "estimated"
+    record["issues"] = ("estimated " + between + ("; " + record["issues"] if record["issues"] else ""))[:254]
+    return record

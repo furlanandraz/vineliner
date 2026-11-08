@@ -162,6 +162,17 @@ class ReviewSettings:
 
 
 @dataclass(frozen=True)
+class MissingRowSettings:
+    """Missing-row estimate (tools/reconstruction/missing.py)."""
+
+    enabled: bool
+    gap_tolerance_frac: float  # neighbours within width * (1 +/- this) are correctly spaced
+    whole_row_tolerance_frac: float  # a filled gap's new spacing must lie this close to the width
+    station_factor: float
+    max_missing_rows: int
+
+
+@dataclass(frozen=True)
 class ExportSettings:
     shapefile: bool
     geopackage: bool
@@ -189,9 +200,11 @@ class RunSettings:
     reconstruction: ReconstructionSettings
     validation: ValidationSettings
     review: ReviewSettings
+    missing_row_estimate: MissingRowSettings
     store_surfaces: str
     export: ExportSettings
     raw: dict[str, Any]
+    notes: tuple[str, ...] = ()  # settings the code adjusted, reported at the start of a run
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> RunSettings:
@@ -278,6 +291,11 @@ class RunSettings:
         surfaces = r.get("storage", "surfaces", choices=SURFACE_STORAGE)
         export = [r.get("export", k, True, kind=bool) for k in ("shapefile", "geopackage", "overlay")]
         export.append(r.get("export", "drop_hanging_rows", False, kind=bool))
+        mre_enabled = r.get("missing_row_estimate", "enabled", False, kind=bool)
+        mre_tol = r.get("missing_row_estimate", "gap_tolerance_frac", 0.50, kind=float)
+        mre_whole = r.get("missing_row_estimate", "whole_row_tolerance_frac", 0.20, kind=float)
+        mre_station = r.get("missing_row_estimate", "station_factor", 5.0, kind=float)
+        mre_max = r.get("missing_row_estimate", "max_missing_rows", 3, kind=int)
 
         r.raise_if_failed()
 
@@ -297,6 +315,11 @@ class RunSettings:
             problems.append(f"[seeds] lines {seed_lines} must be template indices {indices}")
         if not 0 < min_cov <= 1:
             problems.append("[scoring] min_valid_coverage must be in (0, 1]")
+        if not 0 < mre_tol <= 1 or not 0 < mre_whole <= 0.5 or mre_station <= 0 or mre_max < 1:
+            problems.append(
+                "[missing_row_estimate] needs 0 < gap_tolerance_frac <= 1, 0 < whole_row_tolerance_frac <= 0.5, "
+                "station_factor > 0 and max_missing_rows >= 1"
+            )
         if rot[2] <= 0 or rot[1] <= rot[0]:
             problems.append("[rotation] needs start_deg < stop_deg and step_deg > 0")
         if centre_spacing <= 0:
@@ -317,6 +340,15 @@ class RunSettings:
             problems.append(f"[spacing] {exc}")
         if problems:
             raise ConfigError("Invalid configuration:\n  " + "\n  ".join(problems))
+
+        # The estimate needs complete rows, so it turns hanging-row deletion on (TOML cannot tie settings together).
+        notes = []
+        if mre_enabled and not export[3]:
+            export[3] = True
+            notes.append(
+                "[missing_row_estimate] is on, so [export] drop_hanging_rows is turned on too: "
+                "rows are only estimated between complete neighbouring rows."
+            )
 
         return cls(
             input=InputSettings(
@@ -374,7 +406,9 @@ class RunSettings:
             review=ReviewSettings(**review),
             store_surfaces=surfaces,
             export=ExportSettings(*export),
+            missing_row_estimate=MissingRowSettings(mre_enabled, mre_tol, mre_whole, mre_station, mre_max),
             raw=config,
+            notes=tuple(notes),
         )
 
 

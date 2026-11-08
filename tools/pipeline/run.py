@@ -34,7 +34,18 @@ from ..export import (
 from ..geo import Grid
 from ..imagery import combine, gray_from_bands, gray_response, ndvi_response, scale_response, valid_mask
 from ..io import read_polygons, read_raster, write_raster
-from ..reconstruction import Grower, build_chains, finalise_rows, link_seeds, rows_from_chains, seeds_from_selection
+from ..reconstruction import (
+    Grower,
+    build_chains,
+    fill_gaps,
+    finalise_rows,
+    find_gaps,
+    gap_point,
+    link_seeds,
+    row_width,
+    rows_from_chains,
+    seeds_from_selection,
+)
 from ..search import (
     RIDGE_FIELDS,
     LocalSearch,
@@ -48,7 +59,19 @@ from ..search import (
     window_edge_share,
 )
 from ..template import Template, load_or_build
-from ..validation import CHECKS, check_block, evidence_along, mean_evidence, review_section, seed_rms, split_hanging
+from ..validation import (
+    CHECKS,
+    CONF_CLASSES,
+    Issue,
+    check_block,
+    evidence_along,
+    mark_estimated,
+    mean_evidence,
+    meets_boundary_twice,
+    review_section,
+    seed_rms,
+    split_hanging,
+)
 from ..vineyards import block_mask, make_blocks, pixel_window
 
 
@@ -212,6 +235,8 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.json").write_text(json.dumps(config, indent=2))
     log(f"Run directory: {run_dir}")
+    for note in settings.notes:
+        log(f"Note: {note}")
 
     inputs = load_inputs(settings)
     grid, valid, blocks = inputs.grid, inputs.valid, inputs.blocks
@@ -332,11 +357,45 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             sections, removed = split_hanging(sections, block.polygon, settings.validation.tolerance_m)
             removed_reviews = review_all(removed, stats_all)
         issues, stats, vsummary = check_block(sections, block.polygon, settings.validation, block.id)
+
+        estimated, gaps, width_info = [], [], None
+        if settings.missing_row_estimate.enabled and sections:
+            mre = settings.missing_row_estimate
+            width, width_info = row_width(sections, stats, float(np.median([sec.spacing_m for sec in sections])))
+            if width is not None:
+                gaps = find_gaps(
+                    sections, width, mre.gap_tolerance_frac, mre.whole_row_tolerance_frac,
+                    mre.max_missing_rows, settings.validation.sample_step_m,
+                )
+                estimated = fill_gaps(
+                    gaps, sections, width, mre.station_factor, block.polygon, settings.validation.tolerance_m,
+                    space.spacings, next_id["section"], meets_boundary_twice,
+                )
+                next_id["section"] += len(estimated)
+                for sec in estimated:
+                    along[sec.id] = evidence_along(sec, scorer)
+                    ev_by_id[sec.id] = mean_evidence(along[sec.id])
+                sections = sections + estimated
+                # Re-check with the estimated rows in place; neighbours of a filled gap are no longer too far apart.
+                issues, stats, vsummary = check_block(sections, block.polygon, settings.validation, block.id)
+                issues += [
+                    Issue("row_gap", block.id, (g.a, g.b), gap_point(g), value=round(g.gap_m, 3), detail=g.reason)
+                    for g in gaps if not g.filled
+                ]
         reviews = review_all(sections, stats)
+        for rec, sec in zip(reviews, sections):
+            if "estimated" in sec.flags:
+                mark_estimated(rec, sec)
+        vsummary["missing_row_estimate"] = None if width_info is None else width_info | {
+            "gaps_too_wide": len(gaps),
+            "gaps_filled": sum(g.filled for g in gaps),
+            "rows_added": len(estimated),
+            "gaps_not_filled": [{"rows": [g.a, g.b], "gap_m": round(g.gap_m, 3), "reason": g.reason} for g in gaps if not g.filled],
+        }
         vsummary["removed_hanging"] = len(removed)
         vsummary["removed_hanging_m"] = round(sum(s.length_m for s in removed), 1)
         vsummary["review"] = sum(r["review"] for r in reviews)
-        vsummary["conf"] = {c: sum(r["conf"] == c for r in reviews) for c in ("high", "medium", "low")}
+        vsummary["conf"] = {c: sum(r["conf"] == c for r in reviews) for c in CONF_CLASSES}
         vsummary["bridged_m"] = round(sum(sec.bridged_m for sec in sections), 1)
 
         raw_accepted = int(np.sum(np.nan_to_num(results.best_score, nan=-1) >= accept_min))
@@ -381,6 +440,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             f"{len(grower.joins)} joins -> {len(sections)} rows ({vsummary['conf']['high']} high, {vsummary['conf']['medium']} medium, "
             f"{vsummary['conf']['low']} low confidence)"
             + (f", {len(removed)} hanging rows removed" if settings.export.drop_hanging_rows else "")
+            + (f", {len(estimated)} missing rows estimated" if settings.missing_row_estimate.enabled else "")
             + f" ({time.perf_counter() - tb:.1f} s)"
         )
 
@@ -446,6 +506,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         "run_dir": str(run_dir),
         "created": datetime.now().isoformat(timespec="seconds"),
         "open_choices_set_by_this_run": open_choices(read_toml(DEFAULT_CONFIG), config),
+        "settings_notes": list(settings.notes),
         "inputs": {
             "rasters": [r.metadata | {"band_names": list(r.band_names)} for r in inputs.rasters + ([inputs.ndvi] if inputs.ndvi else [])],
             "invalid_pixels": int((~valid).sum()),
@@ -462,11 +523,14 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "chains": len(all_chains),
             "rows": len(all_sections),
             "rows_for_review": sum(r["review"] for r in all_reviews),
-            "conf": {c: sum(r["conf"] == c for r in all_reviews) for c in ("high", "medium", "low")},
+            "conf": {c: sum(r["conf"] == c for r in all_reviews) for c in CONF_CLASSES},
             "row_length_m": round(sum(s.length_m for s in all_sections), 1),
-            "length_by_conf_m": {c: round(sum(r["length_m"] for r in all_reviews if r["conf"] == c), 1) for c in ("high", "medium", "low")},
+            "length_by_conf_m": {c: round(sum(r["length_m"] for r in all_reviews if r["conf"] == c), 1) for c in CONF_CLASSES},
             "bridged_m": round(sum(s.bridged_m for s in all_sections), 1),
             "dangling_ends": sum(r["dangling"] for r in all_reviews),
+            "missing_row_estimate": settings.missing_row_estimate.enabled,
+            "rows_estimated": sum(r["estimated"] for r in all_reviews),
+            "row_gaps_not_filled": sum(1 for f in all_issues if f.check == "row_gap"),
             "drop_hanging_rows": settings.export.drop_hanging_rows,
             "removed_hanging": len(all_removed),
             "removed_hanging_m": round(sum(s.length_m for s in all_removed), 1),

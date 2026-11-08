@@ -136,6 +136,21 @@ min_length_m = 4.0              # shorter rows are flagged
 [storage]                       # §7: score surfaces
 # surfaces =                    # OPEN: "all" | "winning_spacing" | "none"
 
+[missing_row_estimate]          # §10: add rows the image did not show, between rows too far apart
+# The block's median row width d comes from the measured distances between its
+# detected rows (a distance spanning several row intervals is divided by their
+# number first). Neighbouring rows further apart than d * (1 + gap_tolerance_frac)
+# get round(gap / d) - 1 rows in between, interpolated between the two
+# neighbours every station_factor * d along the row so they follow its
+# curvature. Added rows get estimated = 1 and review = 1 in rows.shp.
+# Needs complete rows: turning this on also turns on [export] drop_hanging_rows.
+enabled = false
+gap_tolerance_frac = 0.50       # neighbours within d +/- 50 % are correctly spaced (rows may drift)
+whole_row_tolerance_frac = 0.20 # whole-number check: a filled gap's new spacing must be within d +/- 20 %;
+                                # it only rejects gaps near 1.5, 2.5, ... rows. 0.25 or more accepts every gap
+station_factor = 5.0            # interpolation stations every 5 x d along the row
+max_missing_rows = 3            # at most this many rows are added into one gap; wider gaps are only reported
+
 [export]                        # §13
 shapefile = true
 geopackage = true               # optional convenience copy with every layer
