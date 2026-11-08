@@ -19,6 +19,7 @@ from shapely.geometry import LineString, MultiLineString, Point
 
 from .chains import Chain
 from .growth import Row
+from .smoothing import clean_line
 
 
 @dataclass
@@ -75,7 +76,8 @@ def rows_from_chains(chains: list[Chain], spacings: tuple[float, ...], first_id:
     return rows
 
 
-def finalise_rows(rows: list[Row], polygon, boundary_tol_m: float, first_id: int = 0) -> list[RowSection]:
+def finalise_rows(rows: list[Row], polygon, boundary_tol_m: float, first_id: int = 0, max_turn_deg: float | None = None) -> list[RowSection]:
+    """max_turn_deg: the [smoothing] limit, applied again to the final clipped and snapped geometry."""
     boundary = polygon.boundary
     sections: list[RowSection] = []
     for row in rows:
@@ -111,6 +113,7 @@ def finalise_rows(rows: list[Row], polygon, boundary_tol_m: float, first_id: int
             s_state = state(Point(part.coords[0]))
             e_state = state(Point(part.coords[-1]))
             part = _snap_ends(part, polygon, s_state == "boundary", e_state == "boundary", boundary_tol_m)
+            part = LineString(clean_line(part.coords, max_turn_deg))
             bridged = None
             if bridged_zone is not None:
                 b = part.intersection(bridged_zone)

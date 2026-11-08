@@ -36,6 +36,7 @@ import shapely
 from shapely.geometry import LineString, MultiLineString, Point
 
 from .rows import RowSection, snap_to_boundary
+from .smoothing import clean_line, limit_turns
 
 MIN_SAMPLES = 3  # normal rays that must agree before two rows count as neighbours
 
@@ -144,8 +145,14 @@ def find_gaps(
     return gaps
 
 
-def interpolate_rows(a: LineString, b: LineString, missing: int, width: float, station_factor: float, polygon, tol: float) -> list[LineString | None]:
-    """The rows between a and b (step 4). None where an interpolated row would not span the block."""
+def interpolate_rows(
+    a: LineString, b: LineString, missing: int, width: float, station_factor: float, polygon, tol: float,
+    max_turn_deg: float | None = None,
+) -> list[LineString | None]:
+    """The rows between a and b (step 4). None where an interpolated row would not span the block.
+
+    max_turn_deg: the [smoothing] limit, applied to the interpolated vertices as to detected rows.
+    """
     step = station_factor * width
     stations = np.unique(np.concatenate([np.arange(0.0, a.length, step), [a.length]]))
     pa, pb = [], []
@@ -168,11 +175,13 @@ def interpolate_rows(a: LineString, b: LineString, missing: int, width: float, s
     out = []
     for i in range(1, missing + 1):
         coords = pa + (i / (missing + 1)) * (pb - pa)
-        out.append(_span_block(coords, polygon, reach, tol))
+        if max_turn_deg is not None:
+            coords, _ = limit_turns(coords, max_turn_deg)
+        out.append(_span_block(coords, polygon, reach, tol, max_turn_deg))
     return out
 
 
-def _span_block(coords: np.ndarray, polygon, reach: float, tol: float) -> LineString | None:
+def _span_block(coords: np.ndarray, polygon, reach: float, tol: float, max_turn_deg: float | None = None) -> LineString | None:
     """Extend a line along its end directions, clip it to the block, snap its ends onto the boundary."""
     def unit(v):
         n = np.hypot(*v)
@@ -190,7 +199,7 @@ def _span_block(coords: np.ndarray, polygon, reach: float, tol: float) -> LineSt
     c = [tuple(v) for v in part.coords]
     c[0] = snap_to_boundary(c[0], None, polygon, tol)
     c[-1] = snap_to_boundary(c[-1], None, polygon, tol)
-    return LineString(c)
+    return LineString(clean_line(c, max_turn_deg))
 
 
 def fill_gaps(
@@ -203,6 +212,7 @@ def fill_gaps(
     spacings,
     first_id: int,
     meets_boundary_twice,
+    max_turn_deg: float | None = None,
 ) -> list[RowSection]:
     """RowSections for every row that fits into a fillable gap."""
     by_id = {s.id: s for s in sections}
@@ -211,7 +221,7 @@ def fill_gaps(
     for gap in gaps:
         if not gap.filled:
             continue
-        lines = interpolate_rows(by_id[gap.a].geometry, by_id[gap.b].geometry, gap.missing, width, station_factor, polygon, tol)
+        lines = interpolate_rows(by_id[gap.a].geometry, by_id[gap.b].geometry, gap.missing, width, station_factor, polygon, tol, max_turn_deg)
         complete = [g for g in lines if g is not None and meets_boundary_twice(g, polygon, tol)]
         if len(complete) < len(lines):
             gap.filled = False

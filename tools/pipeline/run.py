@@ -37,6 +37,7 @@ from ..io import read_polygons, read_raster, write_raster
 from ..reconstruction import (
     Grower,
     build_chains,
+    limit_turns,
     fill_gaps,
     finalise_rows,
     find_gaps,
@@ -337,7 +338,17 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         scorer = PointScorer(bank, wgrid, mv, m, template.weights, template.centre_position, settings.scoring)
         grower = Grower(rows_, block.polygon, scorer, rs, template.line_length_m)
         grown = grower.run()
-        sections = finalise_rows(grown, block.polygon, settings.validation.tolerance_m, first_id=next_id["section"])
+        smoothed_vertices = 0
+        if settings.smoothing.enabled:
+            for r in grown:
+                before = len(r.points)
+                points, r.seg_support = limit_turns(r.points, settings.smoothing.max_turn_deg, r.seg_support)
+                r.points = list(points)
+                smoothed_vertices += before - len(r.points)
+        sections = finalise_rows(
+            grown, block.polygon, settings.validation.tolerance_m, first_id=next_id["section"],
+            max_turn_deg=settings.smoothing.max_turn_deg if settings.smoothing.enabled else None,
+        )
         next_id["section"] += len(sections)
         seeds_by_id = {s.id: s for s in seeds}
         along = {sec.id: evidence_along(sec, scorer) for sec in sections}
@@ -370,6 +381,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
                 estimated = fill_gaps(
                     gaps, sections, width, mre.station_factor, block.polygon, settings.validation.tolerance_m,
                     space.spacings, next_id["section"], meets_boundary_twice,
+                    settings.smoothing.max_turn_deg if settings.smoothing.enabled else None,
                 )
                 next_id["section"] += len(estimated)
                 for sec in estimated:
@@ -428,6 +440,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "chains": len(chains),
             "chains_flagged_lateral_spread": sum("lateral_spread" in c.flags for c in chains),
             "rows_after_growth": len(grown),
+            "smoothing_vertices_removed": smoothed_vertices,
             "joins": len(grower.joins),
             "growth_rounds": grower.rounds,
             "sections": len(sections),

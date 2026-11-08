@@ -136,6 +136,14 @@ min_length_m = 4.0              # shorter rows are flagged
 [storage]                       # §7: score surfaces
 # surfaces =                    # OPEN: "all" | "winning_spacing" | "none"
 
+[smoothing]                     # §10: maximum direction change between row vertices
+# While any vertex of a row turns by more than max_turn_deg, the sharpest one is
+# removed (never the two ends). This removes spikes and lines that double back
+# and caps jitter. With vertices ~1 m apart, 20 deg is a ~2.9 m curve radius, so
+# curves within the 5-10 m radius assumption are kept. Applies to estimated rows too.
+enabled = true
+max_turn_deg = 20.0
+
 [missing_row_estimate]          # §10: add rows the image did not show, between rows too far apart
 # The block's median row width d comes from the measured distances between its
 # detected rows (a distance spanning several row intervals is divided by their
