@@ -346,6 +346,25 @@ Every threshold named here is an `[reconstruction]` or `[seeds]` config key and 
 - **Marking.** Added rows have `estimated = 1`, `conf = estimated` and `review = 1`.
 - **Dependency.** The estimate needs complete rows. When it is on, `[export] drop_hanging_rows` is forced on in `RunSettings` (TOML cannot tie settings together), and a note is logged and stored in `report.json`.
 
+### Squash (2026-11-08)
+
+`tools/reconstruction/squash.py`, settings `merge_*` in `[missing_row_estimate]`. After the estimate, removed hanging pieces are assigned to estimated rows.
+- **Assignment.** A piece goes to the estimated row whose buffer of ±0.5 × the block's row width holds at least 80% of the piece, running within 10°. If several qualify, the one holding the most wins.
+- **Rebuild.** The row then follows each piece where the piece covers it (its extent projected onto the row), and keeps the estimate elsewhere. Overlaps go to the piece with the better template evidence.
+- **Ramps.** Where the row switches between lines that are offset sideways, a straight ramp of length offset / tan(0.75 × the smoothing limit) keeps the switch within the turn limit.
+- **Ends and checks.** The estimate's boundary ends are kept. The result must meet the boundary at exactly its two ends; otherwise the plain estimate stays.
+- **Attributes.** `det_pct` gives the detected share. Merged rows have `conf = merged` and are reviewed only below 50% detected, or when another check flags them.
+
+### Row numbering (2026-11-08)
+
+`tools/reconstruction/numbering.py`, `[row_numbering]`.
+- **Block direction.** θ_b is the length-weighted axial mean of the block's rows.
+- **Transects.** Transects run along n_b through every row's midpoint, plus one every `transect_interval_m` along the block.
+- **Relations.** On each transect, consecutive crossings give a relation no(b) − no(a) = max(1, round(gap · cos φ / d)), with φ the rows' local deviation from θ_b.
+- **Solving.** The most common relation per pair wins. A maximum spanning tree weighted by transect support assigns the numbers.
+- **Uncertain rows.** Rows in a relation the numbers break, or not linked to the main group, get `row_no_ok = 0` and `review = 1`.
+- **Direction and gaps.** Numbers start at 1 and increase along n_b. Missing rows leave skipped numbers.
+
 ## 11. Geometry validation suite
 
 Run these checks on final merged/clipped row sections, not individual short seed samples.
@@ -638,6 +657,8 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 27. **Missing-row estimate** (user; `[missing_row_estimate]`, §10). Fills gaps between complete neighbouring rows with rows interpolated every 5 × the median row width. It forces `drop_hanging_rows` on. Config `centroid-pretest-cache-row-estimate.toml`. Bordeaux result in §18.
 28. **Estimate tolerances are settings** (user). `gap_tolerance_frac` (default 0.50, first 0.10: too tight for drifting rows), `whole_row_tolerance_frac` (default 0.20) and `max_missing_rows` (default 3) are all in `[missing_row_estimate]`.
 29. **Row smoothing** (user; `[smoothing]`, §10). Rows came out jagged: 28 vertices doubled back (turns over 90°, up to 177°) where row pieces were joined, and 121 turned more than 20°. Joins no longer step back, and a maximum direction change between vertices (20° by default) is enforced on the final rows. Results in §18.
+30. **Squash hanging pieces into estimated rows** (user; `merge_*` in `[missing_row_estimate]`, §10). Buffer ±0.5 × the block's median row width (user choice: catches drift, not the neighbouring row), ≥ 80% inside, ≤ 10°. On Bordeaux the length drawn from the image rose from 15.35 to 18.21 km and rows for review fell from 70 to 49 (§18).
+31. **Row numbering** (user; `[row_numbering]`, §10). Built only after the squash showed a clear improvement. Numbering is consecutive in clean blocks, skipped numbers mark missing rows, and uncertain numbers flag rows that drift between lanes.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -844,4 +865,37 @@ Same config (`centroid-pretest-cache-row-estimate.toml`), before (`runs/20261108
 | sharpest | 177° | 20.0° |
 
 Rows, row length and estimates are unchanged (306 rows, 19.8 km, 46 estimated). 85 vertices were removed before clipping. The worst former kink, a hairpin at a join, is now a straight line with a slight bend.
+
+### Squash and row numbering on Bordeaux (2026-11-08)
+
+Squash (`centroid-pretest-cache-row-estimate.toml`, `runs/20261108-201902-squash-ramps`, 54 s) against the run before it (`runs/20261108-143124-smoothing-final`):
+
+| | Before | Squash |
+| --- | ---: | ---: |
+| Row length drawn from the image | 15.35 km | 18.21 km |
+| Purely interpolated length | 3.60 km | 0.76 km |
+| Estimated rows: pure / merged | 46 / 0 | 5 / 41 (median 92% detected) |
+| Rows for review | 70 | 49 |
+| Hanging pieces left over | 147 (6.6 km) | 79 (3.4 km) |
+| Dangling ends / crossings / turns over 20° | 0 / 0 / 0 | 0 / 0 / 0 |
+
+68 pieces were squashed. That matches the earlier test of the buffer at ±0.5 × width.
+
+Numbering (`centroid-pretest-cache-row-estimate-numbering.toml`, `runs/20261108-203818-numbering`, 47 s):
+
+| Block | Rows | Numbers | Missing numbers | Uncertain |
+| ---: | ---: | --- | --- | ---: |
+| 0 | 42 | 1–41 | none | 4 |
+| 1 | 77 | 1–77 | none | 0 |
+| 2 | 49 | 1–49 | none | 0 |
+| 3 | 32 | 1–37 | 7–10, 16–19 | 5 |
+| 4 | 33 | 1–33 | none | 0 |
+| 5 | 50 | 1–50 | none | 8 |
+| 6 | 23 | 1–28 | 20–24 | 4 |
+
+- **Clean blocks.** Blocks 1, 2 and 4 are numbered without gaps or uncertainty.
+- **Block 3.** Its skipped numbers are the two 4-row gaps the estimate leaves unfilled (`max_missing_rows` = 3).
+- **Block 6.** Its 5-row gap lies beyond the estimate's neighbour search, which reaches (3 + 2.5) × the row width. The numbering found it anyway.
+- **Uncertain rows.** All 21 also have other issues. Their median share of spacing samples out of range is 31.5%, against 1.5% for the other rows, so they mark real lane drift. They raise the rows for review from 49 to 57.
+- **Shared numbers.** Two numbers are shared, each between a long outermost row and short fragments at the block edge.
 

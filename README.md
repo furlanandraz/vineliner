@@ -65,14 +65,16 @@ Checks never remove or fail a row. They are reported, so a person can decide.
 | Field | Meaning |
 | --- | --- |
 | `review` | 1 = a person should look at this row |
-| `conf` | `high`: no notes. `medium`: minor notes only (≥ 1 m bridged, or spacing off at ≥ 5% of samples). `low`: review = 1 |
+| `conf` | `high`: no notes. `medium`: minor notes only (≥ 1 m bridged, or spacing off at ≥ 5% of samples). `low`: review = 1. `merged` / `estimated`: an estimated row with or without detected pieces squashed in |
 | `issues` | The reasons in words, e.g. `dangling end end; bridged 18.0 m (35%)` |
 | `dangling` | Ends that stop inside the block (0–2) |
 | `crossings` | Other rows this row crosses |
 | `start_st`, `end_st` | How each end stopped: boundary, unsupported, conflict, limit |
 | `bridged_m`, `bridge_pct` | Length and share drawn without image support |
+| `det_pct` | Share of the row drawn from the image: everything not bridged for detected rows, the squashed pieces for estimated rows |
 | `ev_mean`, `ev_sup_pct` | Mean template score along the line (1 m samples), and share of samples with support |
 | `sp_med_m`, `sp_out_pct` | Median measured distance to neighbouring rows, and share of samples outside the validation range |
+| `row_no`, `row_no_ok` | Row number within the block, and whether its neighbours agree on it (with `[row_numbering]`) |
 | `near_row` | The row this one runs too close to, if any. Of two rows that are too close, only the one with weaker evidence (`ev_mean`) is flagged for it; the other gets a note |
 | `pos_rms_m` | RMS distance of the row's seed detections from the final line, a measure of positional consistency |
 | `theta_deg`, `spacing_m`, `length_m` | Mean direction, template spacing, length |
@@ -131,7 +133,8 @@ Run defaults are in [configs/default.toml](configs/default.toml). Run settings g
 | [configs/centroid-pretest.toml](configs/centroid-pretest.toml) | The full settings for the test data: inputs, assumptions and first-run picks. Centroid pre-test on, kernels built every run |
 | [configs/centroid-pretest-cache.toml](configs/centroid-pretest-cache.toml) | The same, with the kernel cache on. The quickest |
 | [configs/full-search.toml](configs/full-search.toml) | The same, without the pre-test: the full grid search baseline, for comparison |
-| [configs/centroid-pretest-cache-row-estimate.toml](configs/centroid-pretest-cache-row-estimate.toml) | Pre-test and cache, plus the missing-row estimate, with hanging rows deleted |
+| [configs/centroid-pretest-cache-row-estimate.toml](configs/centroid-pretest-cache-row-estimate.toml) | Pre-test and cache, plus the missing-row estimate (with squash), with hanging rows deleted |
+| [configs/centroid-pretest-cache-row-estimate-numbering.toml](configs/centroid-pretest-cache-row-estimate-numbering.toml) | The same, plus row numbering |
 
 The test data's inputs live in `centroid-pretest.toml`. The file names don't refer to the git-ignored imagery, so a fresh clone isn't confused by them.
 
@@ -188,9 +191,31 @@ It adds rows the image didn't show, so there's less to draw by hand:
    - it fails the whole-number check, i.e. the new spacing would be more than `whole_row_tolerance_frac` off the width. Rounding never leaves it more than 25% off, so 0.25 or more turns the check off;
    - it would need more than `max_missing_rows`.
 
-Added rows have `estimated = 1`, `conf = estimated` and `review = 1` in `rows.shp`, and are cyan in the overlay.
+**Squash.** Hanging pieces removed earlier often lie on an estimated row: the image showed the row, only broken. Each such piece is squashed into that row:
+- **Which pieces:** at least `merge_min_inside_frac` (80%) of the piece must lie within `merge_buffer_frac` × the block's row width on each side (0.5), running within `merge_max_angle_deg` (10°). Half a row width catches drift but never reaches the neighbouring row.
+- **Geometry:** the row then follows the detected piece wherever one covers it, and the estimate in between, with short ramps where it switches.
+- **Turning it off:** set `merge_pieces = false`.
+
+**Marking.** Added rows have `estimated = 1`. A row rebuilt from pieces gets `conf = merged`, and `det_pct` says how much of it came from the image. It's flagged for review only when less than half is detected, or when another check flags it. A purely interpolated row gets `conf = estimated` and `review = 1`. In the overlay, merged rows are blue and estimated rows cyan.
 
 The estimate only works between complete rows, so it needs `[export] drop_hanging_rows = true`. TOML can't make one setting depend on another, so the code enforces it: if the estimate is on and hanging rows aren't being deleted, deletion is turned on and the run says so in the log and in `report.json` (`settings_notes`).
+
+### Row numbering
+
+```toml
+[row_numbering]
+enabled = true              # on in centroid-pretest-cache-row-estimate-numbering.toml, off in the defaults
+transect_interval_m = 10.0  # a transect across the rows every 10 m, plus one through each row's middle
+```
+
+Each row gets a number, `row_no`, within its block:
+- **How:** transects across the rows give, for each pair of neighbouring rows, the number of row intervals between them. The numbers follow from those relations, with the most common relation winning where transects disagree.
+- **Missing rows:** a missing row leaves its number out, and `blocks.shp` reports `max_row_no` and `missing_no`.
+- **Uncertain rows:** a row whose neighbours disagree on its number, such as one that drifts into the next lane, gets `row_no_ok = 0` and `review = 1`.
+- **Direction:** numbers increase to the left when facing along the rows. That's northward for rows running east–west, and westward for rows running north–south.
+- **Split rows:** two sections of one row in a concave block share a number.
+
+Numbering works best on complete rows, so use it together with the estimate.
 
 ### Kernel cache
 
