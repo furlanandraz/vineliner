@@ -278,6 +278,16 @@ def test_without_the_estimate_the_erased_row_stays_missing(run_dropping):
     assert result.report["totals"]["rows_estimated"] == 0
 
 
+def test_final_rows_have_no_turn_above_the_smoothing_limit(run, run_row_estimate):
+    from tools.reconstruction import turn_angles
+
+    for result, _ in (run, run_row_estimate):
+        for s in result.sections:
+            coords = np.asarray(s.geometry.coords)
+            if len(coords) > 2:
+                assert turn_angles(coords).max() <= 20.0 + 1e-6
+
+
 def test_report_lists_open_choices(run):
     result, _ = run
     chosen = result.report["open_choices_set_by_this_run"]
