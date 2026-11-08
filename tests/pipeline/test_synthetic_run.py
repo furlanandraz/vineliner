@@ -76,6 +76,13 @@ def run_row_estimate(tmp_path_factory):
     return _run(tmp_path_factory.mktemp("synthetic_row_estimate"), overrides, patch=False, erase_row=ERASED_ROW)
 
 
+@pytest.fixture(scope="module")
+def run_numbering(tmp_path_factory):
+    """Erased row, estimate on, and row numbering."""
+    overrides = {"missing_row_estimate": {"enabled": True}, "row_numbering": {"enabled": True}}
+    return _run(tmp_path_factory.mktemp("synthetic_numbering"), overrides, patch=False, erase_row=ERASED_ROW)
+
+
 ERASED_ROW = -28  # row index i of the line (p - origin) . n = i * spacing; the block holds rows -46 .. -9
 
 
@@ -286,6 +293,25 @@ def test_final_rows_have_no_turn_above_the_smoothing_limit(run, run_row_estimate
             coords = np.asarray(s.geometry.coords)
             if len(coords) > 2:
                 assert turn_angles(coords).max() <= 20.0 + 1e-6
+
+
+def test_rows_are_numbered_without_gaps_once_the_missing_row_is_estimated(run_numbering):
+    result, block = run_numbering
+    nos = [r["row_no"] for r in result.reviews]
+    assert sorted(nos) == list(range(1, len(nos) + 1))  # one number per row, none skipped
+    assert all(r["row_no_ok"] == 1 for r in result.reviews)
+    # Numbers increase across the rows: compare with each row's position along the across direction.
+    th = np.radians(SYNTHETIC_THETA)
+    n = np.array([-np.sin(th), np.cos(th)])
+    pos = [np.dot(np.array(s.geometry.interpolate(0.5, normalized=True).coords[0]), n) for s in result.sections]
+    order = [r["row_no"] for _, r in sorted(zip(pos, result.reviews), key=lambda t: t[0])]
+    assert order == sorted(order)
+    est = next(r for r in result.reviews if r["estimated"])
+    assert 1 < est["row_no"] < len(nos)  # the estimated row takes the number between its neighbours
+    blocks = gpd.read_file(result.run_dir / "shapefiles" / "blocks.shp")
+    assert int(blocks.max_row_no.iloc[0]) == len(nos) and int(blocks.missing_no.iloc[0]) == 0
+    rows = gpd.read_file(result.run_dir / "shapefiles" / "rows.shp")
+    assert {"row_no", "row_no_ok"} <= set(rows.columns)
 
 
 def test_report_lists_open_choices(run):
