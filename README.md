@@ -15,6 +15,15 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
+### Tests
+
+`python -m pytest` runs about 180 tests in roughly 20 seconds. None of them need the orthophotos in `dof/`, so they pass on a fresh clone:
+
+- **Unit tests** check one module each, using small hand-built inputs and mocks. For example, a fake scorer stands in for the image when testing row growth, joins and gaps, and the pipeline is mocked when testing the command line.
+- **The end-to-end tests** in `tests/pipeline/` run the whole pipeline on a synthetic striped vineyard, where the true rows are known.
+
+`tests/` mirrors the `tools/` packages; `tests/cli/` covers the entry files in `src/`.
+
 ## Running
 
 ```bash
@@ -122,6 +131,7 @@ Run defaults are in [configs/default.toml](configs/default.toml). Run settings g
 | [configs/centroid-pretest.toml](configs/centroid-pretest.toml) | The full settings for the test data: inputs, assumptions and first-run picks. Centroid pre-test on, kernels built every run |
 | [configs/centroid-pretest-cache.toml](configs/centroid-pretest-cache.toml) | The same, with the kernel cache on. The quickest |
 | [configs/full-search.toml](configs/full-search.toml) | The same, without the pre-test: the full grid search baseline, for comparison |
+| [configs/centroid-pretest-cache-row-estimate.toml](configs/centroid-pretest-cache-row-estimate.toml) | Pre-test and cache, plus the missing-row estimate, with hanging rows deleted |
 
 The test data's inputs live in `centroid-pretest.toml`. The file names don't refer to the git-ignored imagery, so a fresh clone isn't confused by them.
 
@@ -144,6 +154,29 @@ For each block:
 4. A block gets the full grid search when its centroid lies outside the polygon, or when no box within `neighbour_rings` is accepted.
 
 `blocks.shp` records each block's search mode and pre-test (`search`, `pt_theta`, `pt_spacing`, `pt_score`, `pt_ring`, `pt_reason`). The GeoPackage layer `pretests` marks the box each pre-test came from. The log warns when many grid winners sit on the edge of the rotation window, which means the pre-test was probably off.
+
+### Missing-row estimate
+
+```toml
+[missing_row_estimate]
+enabled = true                  # on in centroid-pretest-cache-row-estimate.toml, off in the defaults
+gap_tolerance_frac = 0.50       # neighbouring rows may differ from the median row width by +/- 50 % (drift)
+whole_row_tolerance_frac = 0.20 # whole-number check: after filling, rows must be within the width +/- 20 %
+station_factor = 5.0            # added rows follow their neighbours, with a vertex every 5 x row width
+max_missing_rows = 3            # wider gaps are reported, not filled
+```
+
+It adds rows the image didn't show, so there's less to draw by hand:
+1. **Row width.** The block's median row width comes from the measured distances between its detected rows. A distance that spans several row intervals is first divided by their number, so missing rows don't inflate the median.
+2. **Gaps.** Neighbouring rows further apart than `width × (1 + gap_tolerance_frac)` get `round(gap / width) - 1` rows in between. Rows closer than that count as correctly spaced, even if they drift.
+3. **Shape.** Each added row is interpolated between its two neighbours, with a vertex every `station_factor` × width, so it follows their curvature. It runs from boundary to boundary.
+4. **Not filled.** A gap is reported in `issues.shp` (check `row_gap`) instead of filled in two cases:
+   - it fails the whole-number check, i.e. the new spacing would be more than `whole_row_tolerance_frac` off the width. Rounding never leaves it more than 25% off, so 0.25 or more turns the check off;
+   - it would need more than `max_missing_rows`.
+
+Added rows have `estimated = 1`, `conf = estimated` and `review = 1` in `rows.shp`, and are cyan in the overlay.
+
+The estimate only works between complete rows, so it needs `[export] drop_hanging_rows = true`. TOML can't make one setting depend on another, so the code enforces it: if the estimate is on and hanging rows aren't being deleted, deletion is turned on and the run says so in the log and in `report.json` (`settings_notes`).
 
 ### Kernel cache
 
