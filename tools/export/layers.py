@@ -108,7 +108,11 @@ def block_records(blocks, block_reports, sections, reviews) -> list[dict]:
             "length_m": round(sum(r["length_m"] for r in mine), 1),
             "theta_deg": by_block[b.id].get("theta_median_deg"),
             "spacing_m": by_block[b.id].get("spacing_median_m"),
+            "search": by_block[b.id].get("search_mode", "full"),
         }
+        pt = by_block[b.id].get("centroid_pretest")
+        if pt is not None:
+            extra.update(pt_theta=pt["theta_deg"], pt_spacing=pt["spacing_m"], pt_score=pt["score"], pt_ring=pt["ring"], pt_reason=pt["reason"])
         for key, value in extra.items():
             rec[key if key not in rec else (key[:8] + "_v")] = value
         records.append(rec)

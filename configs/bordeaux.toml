@@ -58,6 +58,9 @@ box = "nominal_d0"              # PICK: every spacing gets the same 7 x 7 transl
 [centres]
 spacing_m = 2.0                 # PICK: ~1.4 rows apart; with seed lines -1..1 every row gets seeds
 
+[centroid_pretest]
+enabled = true                  # user request (2026-11-08): centroid pre-test, then a narrowed grid search
+
 [scoring]
 normalisation = "renormalise_valid"  # PICK: missing pixels are not read as soil
 min_valid_coverage = 0.5        # PICK

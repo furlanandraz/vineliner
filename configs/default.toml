@@ -47,6 +47,9 @@ band_width_px = 1               # kernel sampling width, not a row width; must b
 [kernels]                       # §6.1
 coverage = "exact"              # "exact" | "sampled" (fractional); "centre" | "all_touched" (comparisons)
 # subpixel_samples =            # s for s x s sampling; only used by "sampled"
+cache = true                    # save kernels and reuse them in later runs with the same template,
+                                # rotations, spacings, pixel size and coverage (saves ~20 s per run)
+cache_dir = ".cache/kernels"    # relative to the project root; git-ignored
 
 [spacing]                       # §6-7: row width = distance between neighbouring rows (the tractor lane)
 # The search range is fixed before the run. Both ends are searched:
@@ -70,6 +73,19 @@ order = "centre_outward"        # ordering only; every offset is still evaluated
 
 [centres]                       # §7: centres sit on pixel centres of the analysis raster
 # spacing_m =                   # OPEN: favour dense placement
+
+[centroid_pretest]              # §7: cheaper search, narrowed by a pre-test near each block's centroid
+# A box on the centroid is searched in full (every phase, all rotations, all
+# spacings). If it is weak (best score below accept_min), rings of neighbouring
+# boxes around it are tested the same way, one ring at a time, spaced like the
+# grid centres. The first accepted box sets the pre-test. The grid search then
+# keeps every phase but only the rotations and spacings near the pre-test.
+# Blocks whose centroid lies outside the polygon, or with no accepted box within
+# neighbour_rings, get the full grid search.
+enabled = false                 # false = full grid search everywhere (the agreed baseline)
+theta_window_deg = 10.0         # grid rotations within +/- this of the pre-test direction
+spacing_window_frac = 0.10      # grid spacings within +/- this fraction of the pre-test spacing
+neighbour_rings = 3             # rings of neighbouring boxes tried when the centroid box is weak (0 = none)
 
 [scoring]                       # §8
 accept_min = 0.50               # tentative; overlap score, not a probability
