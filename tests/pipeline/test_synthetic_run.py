@@ -69,7 +69,17 @@ def run_pretest_no_neighbours(tmp_path_factory):
     return _run(tmp_path_factory.mktemp("synthetic_pretest_no_rings"), no_rings)
 
 
-def _run(tmp, overrides, patch=True):
+@pytest.fixture(scope="module")
+def run_row_estimate(tmp_path_factory):
+    """One row erased from the image; the missing-row estimate should put it back."""
+    overrides = {"missing_row_estimate": {"enabled": True}}  # drop_hanging_rows follows automatically
+    return _run(tmp_path_factory.mktemp("synthetic_row_estimate"), overrides, patch=False, erase_row=ERASED_ROW)
+
+
+ERASED_ROW = -28  # row index i of the line (p - origin) . n = i * spacing; the block holds rows -46 .. -9
+
+
+def _run(tmp, overrides, patch=True, erase_row=None):
     from pyproj import CRS
 
     crs = CRS.from_epsg(3794)
@@ -77,6 +87,8 @@ def _run(tmp, overrides, patch=True):
     V = stripe_evidence(grid, half_width=0.3)
     if patch:
         V[_patch_mask(grid)] = 0  # a faint patch with no visible rows, to be bridged
+    if erase_row is not None:
+        V[_row_mask(grid, erase_row)] = 0  # a whole row missing from the image
     rng = np.random.default_rng(0)
     gray = 200 - 110 * V + rng.normal(0, 8, V.shape)  # dark rows on bright soil, with noise
     rgb = np.clip(np.stack([gray, gray, gray]), 0, 254).astype(np.uint8)
@@ -239,6 +251,43 @@ def test_kernels_are_cached(run):
     assert list((result.run_dir.parent / "kernel_cache").glob("kernels_*.npz"))
 
 
+def test_missing_row_is_estimated_where_it_belongs(run_row_estimate):
+    result, block = run_row_estimate
+    truth = _row_line(block, ERASED_ROW)
+    assert truth.length > 30  # a long row through the middle
+    estimated = [(s, r) for s, r in zip(result.sections, result.reviews) if r["estimated"]]
+    assert len(estimated) == 1
+    sec, rec = estimated[0]
+    assert sec.geometry.hausdorff_distance(truth) < 0.3
+    assert (rec["conf"], rec["review"]) == ("estimated", 1) and "estimated between rows" in rec["issues"]
+    # ev_mean is the five-line template score: its four neighbour lines still sit on real rows, so about
+    # 0.45 even with nothing on the centre line, below the 0.5 a detected row needs.
+    assert rec["ev_mean"] < 0.5
+    report = result.report
+    assert report["settings_notes"] and report["totals"]["rows_estimated"] == 1
+    mre = report["blocks"][0]["validation"]["missing_row_estimate"]
+    assert mre["row_width_m"] == pytest.approx(SYNTHETIC_SPACING, abs=0.05) and mre["rows_added"] == 1
+    rows = gpd.read_file(result.run_dir / "shapefiles" / "rows.shp")
+    assert int(rows.estimated.sum()) == 1 and set(rows[rows.estimated == 1].conf) == {"estimated"}
+    blocks = gpd.read_file(result.run_dir / "shapefiles" / "blocks.shp")
+    assert int(blocks.estimated.iloc[0]) == 1
+
+
+def test_without_the_estimate_the_erased_row_stays_missing(run_dropping):
+    result, block = run_dropping
+    assert result.report["totals"]["rows_estimated"] == 0
+
+
+def test_final_rows_have_no_turn_above_the_smoothing_limit(run, run_row_estimate):
+    from tools.reconstruction import turn_angles
+
+    for result, _ in (run, run_row_estimate):
+        for s in result.sections:
+            coords = np.asarray(s.geometry.coords)
+            if len(coords) > 2:
+                assert turn_angles(coords).max() <= 20.0 + 1e-6
+
+
 def test_report_lists_open_choices(run):
     result, _ = run
     chosen = result.report["open_choices_set_by_this_run"]
@@ -252,6 +301,22 @@ def _patch_polygon(grid):
     u, n = np.array([np.cos(th), np.sin(th)]), np.array([-np.sin(th), np.cos(th)])
     c = np.array([grid.c + 31.0, grid.f - 29.0])
     return Polygon([c - 3 * u - 8 * n, c + 3 * u - 8 * n, c + 3 * u + 8 * n, c - 3 * u + 8 * n])
+
+
+def _row_mask(grid, i) -> np.ndarray:
+    rows, cols = np.indices(grid.shape)
+    x, y = grid.array_to_world(rows, cols)
+    th = np.radians(SYNTHETIC_THETA)
+    s = (x - grid.c) * -np.sin(th) + (y - grid.f) * np.cos(th)
+    return np.abs(s - i * SYNTHETIC_SPACING) <= 0.5
+
+
+def _row_line(block, i) -> LineString:
+    grid = synthetic_grid()
+    th = np.radians(SYNTHETIC_THETA)
+    u, n = np.array([np.cos(th), np.sin(th)]), np.array([-np.sin(th), np.cos(th)])
+    c = np.array([grid.c, grid.f]) + i * SYNTHETIC_SPACING * n
+    return LineString([c - 200 * u, c + 200 * u]).intersection(block)
 
 
 def _patch_mask(grid) -> np.ndarray:

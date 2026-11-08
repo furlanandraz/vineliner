@@ -325,6 +325,27 @@ Every threshold named here is an `[reconstruction]` or `[seeds]` config key and 
    Growth always terminates.
 6. **Sections.** Rows are clipped to the block polygon and split into connected sections. An endpoint within the validation tolerance of the boundary is *boundary*; any other endpoint keeps its growth state.
 
+### Smoothing (2026-11-08)
+
+`[smoothing]` (on by default, `max_turn_deg = 20`), implemented in `tools/reconstruction/smoothing.py`, caps the direction change between consecutive row vertices.
+- **Rule.** While any interior vertex turns more than the limit, the sharpest one is removed. The ends are never removed, and a merged segment counts as bridged if either part was.
+- **When.** It runs on the grown rows before clipping, and again, through `clean_line`, on the final clipped and snapped rows. The second pass also first drops vertices less than 1 cm from a neighbour, whose tiny segments have no meaningful direction. It applies to estimated rows too.
+- **Join fix.** At the source of the worst kinks, a join now drops the start of the absorbed piece that lies behind the joining tip. The join accepts an end up to `join_distance_frac` × d behind, and connecting to it used to make the line step back and forward again.
+
+### Missing-row estimate (optional, 2026-11-08)
+
+`[missing_row_estimate]`, implemented in `tools/reconstruction/missing.py`, adds rows the image did not show. Its purpose is to reduce the manual drawing left over from detection errors that cannot be eliminated; it does not improve detection.
+- **Row width d.** Per block: the median distance between neighbouring rows, measured along the normals every 1 m. Each distance is first divided by the number of row intervals it spans, judged with the search spacing. Without that, blocks that lost most rows to hanging-row deletion would report a width of about twice the real one.
+- **Gaps.** Neighbours are the rows that normal rays hit most often on each side. A pair further apart than d × (1 + `gap_tolerance_frac`) gets n = round(gap / d) − 1 rows, when:
+  - 1 ≤ n ≤ `max_missing_rows`, and
+  - gap / (n + 1) lies within `whole_row_tolerance_frac` × d of d (the whole-number check).
+
+  Defaults are 0.50, 0.20 and 3. Rows within ±50% of d count as correctly spaced, since rows drift.
+- **Shape.** Each added row is interpolated between its neighbours at stations every 5 × d, so it follows their curvature. It is extended to the block boundary and clipped there, and must meet the boundary at exactly its two ends.
+- **Not filled.** Other wide gaps are reported as `row_gap` issues.
+- **Marking.** Added rows have `estimated = 1`, `conf = estimated` and `review = 1`.
+- **Dependency.** The estimate needs complete rows. When it is on, `[export] drop_hanging_rows` is forced on in `RunSettings` (TOML cannot tie settings together), and a note is logged and stored in `report.json`.
+
 ## 11. Geometry validation suite
 
 Run these checks on final merged/clipped row sections, not individual short seed samples.
@@ -614,6 +635,9 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 24. **Neighbouring boxes back up a weak centroid box** (user). Rings of neighbouring boxes, spaced like the grid centres and up to `neighbour_rings`, are tried before falling back to the full grid search.
 25. **Kernel cache** (user). Kernels are saved to `.cache/kernels/` under a key of everything they depend on (template geometry, rotations, spacings, pixel size, coverage method, cache format version) and reused by later runs (`[kernels] cache`, `cache_dir`). Off by default; on in `configs/centroid-pretest-cache.toml`.
 26. **Config files named after their settings** (user). `configs/bordeaux.toml` became `configs/centroid-pretest.toml`, so no config name refers to the git-ignored imagery. Variants build on it with a new top-level key, `extends = "other.toml"`: `centroid-pretest-cache.toml` (kernel cache on) and `full-search.toml` (pre-test off). The kernel cache is now off by default, so each file's name says what it turns on.
+27. **Missing-row estimate** (user; `[missing_row_estimate]`, §10). Fills gaps between complete neighbouring rows with rows interpolated every 5 × the median row width. It forces `drop_hanging_rows` on. Config `centroid-pretest-cache-row-estimate.toml`. Bordeaux result in §18.
+28. **Estimate tolerances are settings** (user). `gap_tolerance_frac` (default 0.50, first 0.10: too tight for drifting rows), `whole_row_tolerance_frac` (default 0.20) and `max_missing_rows` (default 3) are all in `[missing_row_estimate]`.
+29. **Row smoothing** (user; `[smoothing]`, §10). Rows came out jagged: 28 vertices doubled back (turns over 90°, up to 177°) where row pieces were joined, and 121 turned more than 20°. Joins no longer step back, and a maximum direction change between vertices (20° by default) is enforced on the final rows. Results in §18.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -786,4 +810,38 @@ Runs `runs/20261108-121223-pretest-cold` (kernel cache empty) and `runs/20261108
 - **Speed.** The search is 19 times faster than the full search. With a warm kernel cache the whole run is 8.8 times faster.
 - **Remaining time.** It is now mostly growth, the checks and export, about 20 s.
 - **Accuracy.** Results agree with the full search to within 0.3 m along 97–100% of row length.
+
+### Missing-row estimate on Bordeaux (2026-11-08)
+
+`configs/centroid-pretest-cache-row-estimate.toml` with the default tolerances (gap 50%, whole-number 20%, at most 3 rows per gap), `runs/20261108-132900-row-estimate-50`, 63 s.
+
+| Block | Row width (raw median) | Hanging rows removed | Gaps too wide | Rows added | Gaps not filled |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 0 | 1.44 m (1.45) | 16 | 8 | 8 | 1: an interpolated row would not span the block |
+| 1 | 1.40 m (1.40) | 0 | 0 | 0 | |
+| 2 | 1.37 m (1.38) | 15 | 5 | 8 | |
+| 3 | 1.50 m (1.53) | 42 | 8 | 7 | 2: 7.45 m gaps need 4 rows (> `max_missing_rows` 3) |
+| 4 | 1.40 m (1.40) | 0 | 0 | 0 | |
+| 5 | 1.45 m (1.47) | 34 | 11 | 14 | |
+| 6 | 1.40 m (**2.21**) | 40 | 7 | 9 | |
+
+- **Totals.** 306 rows (19.8 km): 260 detected and complete, plus 46 estimated. No dangling ends, no crossings.
+- **Rows for review.** 69 in total: the 46 estimated rows plus 23 detected rows.
+- **Tolerances.** With the first 10% tolerances (`runs/20261108-131001-row-estimate`), gaps of 1.83 m and 1.96 m were reported as holding no whole row, and block 6's 2.48 m gap failed the whole-number check. At the 50% / 20% defaults the first two count as drift and the third gets its row.
+- **Width correction.** Block 6's raw median distance (2.21 m) spans more than one row interval, because it lost most of its rows to hanging-row deletion. The interval-corrected width (1.40 m) matches the search spacing.
+- **Placement.** On the overlay the estimated rows fall evenly between the detected rows.
+- **Evidence.** The template score along estimated rows (median 0.41) is not near zero, because four of the template's five lines sit on the real neighbouring rows.
+
+### Row smoothing on Bordeaux (2026-11-08)
+
+Same config (`centroid-pretest-cache-row-estimate.toml`), before (`runs/20261108-132900-row-estimate-50`) and after (`runs/20261108-143124-smoothing-final`, 57 s):
+
+| Vertex turns in rows.shp | Before | After |
+| --- | ---: | ---: |
+| over 20° | 121 | 0 |
+| over 45° | 46 | 0 |
+| over 90° (line doubles back) | 28 | 0 |
+| sharpest | 177° | 20.0° |
+
+Rows, row length and estimates are unchanged (306 rows, 19.8 km, 46 estimated). 85 vertices were removed before clipping. The worst former kink, a hairpin at a join, is now a straight line with a slight bend.
 

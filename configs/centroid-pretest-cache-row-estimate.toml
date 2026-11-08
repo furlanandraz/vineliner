@@ -1,0 +1,19 @@
+# Centroid pre-test with the kernel cache and the missing-row estimate.
+#
+# The same as centroid-pretest-cache.toml, plus rows added where neighbouring
+# detected rows stand further apart than the median row width allows. Added rows
+# are marked estimated = 1 (conf = "estimated", review = 1) in rows.shp.
+#
+# The estimate needs complete rows, so hanging rows are deleted. That is set
+# here; the code would turn it on anyway when the estimate is enabled.
+extends = "centroid-pretest-cache.toml"
+
+[missing_row_estimate]
+enabled = true
+gap_tolerance_frac = 0.50       # neighbours within the median row width +/- 50 % are correctly spaced
+whole_row_tolerance_frac = 0.20 # a filled gap's new spacing must be within the width +/- 20 % (0.25+ = always)
+station_factor = 5.0            # added rows get a vertex every 5 x the row width, following their neighbours
+max_missing_rows = 3            # at most 3 rows are added into one gap; wider gaps are reported in issues.shp
+
+[export]
+drop_hanging_rows = true

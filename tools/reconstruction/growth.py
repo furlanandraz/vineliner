@@ -267,9 +267,16 @@ class Grower:
             row.reverse()  # joining end is now row.end
         if other_side == "end":
             other.reverse()  # joining end is now other.start
-        joint = other.points[0]
-        row.seg_support += [supported] + other.seg_support  # connector, then the other row
-        row.points.extend(other.points)
+        # Drop the start of the other row that lies behind this row's tip, so the merged
+        # line never steps back (the join may accept an end up to join_distance behind).
+        tip, direction = row.points[-1], row.outward_tangent("end", self.back_m)
+        k = 0
+        while k < len(other.points) - 1 and np.dot(other.points[k] - tip, direction) <= 0:
+            k += 1
+        points, support = other.points[k:], other.seg_support[k:]
+        joint = points[0]
+        row.seg_support += [supported] + support  # connector, then the rest of the other row
+        row.points.extend(points)
         row.end = other.end
         row.seed_ids += other.seed_ids
         row.chain_ids += other.chain_ids

@@ -104,6 +104,7 @@ def block_records(blocks, block_reports, sections, reviews) -> list[dict]:
             "rows": len(mine),
             "review": sum(r["review"] for r in mine),
             "removed": by_block[b.id]["validation"].get("removed_hanging", 0),
+            "estimated": sum(r.get("estimated", 0) for r in mine),
             "row_ends": sum(len(s.boundary_points()) for s in sections if s.block_id == b.id),
             "length_m": round(sum(r["length_m"] for r in mine), 1),
             "theta_deg": by_block[b.id].get("theta_median_deg"),
