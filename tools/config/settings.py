@@ -22,7 +22,6 @@ NDVI_METHODS = ("white_tophat", "stretch")
 SCALE_REGIONS = ("per_block", "all_blocks")
 NODATA_RULES = ("any_band", "all_bands")
 NORMALISATIONS = ("renormalise_valid", "full_kernel")
-UNAVAILABLE_BAND_POLICIES = ("renormalise", "zero")
 TRANSLATION_BOXES = ("tested_d", "nominal_d0")
 SURFACE_STORAGE = ("all", "winning_spacing", "none")
 SELECTION_METHODS = ("best", "orientation_consensus")
@@ -101,7 +100,6 @@ class ScoringSettings:
     accept_min: float
     normalisation: str
     min_valid_coverage: float
-    unavailable_bands: str
 
 
 @dataclass(frozen=True)
@@ -289,7 +287,6 @@ class RunSettings:
         accept_min = r.get("scoring", "accept_min", kind=float)
         normalisation = r.get("scoring", "normalisation", choices=NORMALISATIONS)
         min_cov = r.get("scoring", "min_valid_coverage", kind=float)
-        unavailable = r.get("scoring", "unavailable_bands", choices=UNAVAILABLE_BAND_POLICIES)
         seed_lines = r.get("seeds", "lines", kind=list)
         seed_min_mean = r.get("seeds", "min_band_mean", kind=float)
         sel_method = r.get("selection", "method", choices=SELECTION_METHODS)
@@ -337,6 +334,8 @@ class RunSettings:
             problems.append(f"[template] weights sum to {sum(weights)}, not 1.00 (PROJECT.md §6)")
         if 0 not in indices:
             problems.append("[template] indices must contain the centre line 0")
+        elif list(indices) != [-k for k in reversed(indices)]:
+            problems.append("[template] indices must be symmetric about 0 (weights of lines outside a block are mirrored)")
         if band_width <= 0:
             problems.append("[template] band_width_px must be > 0 for rasterisation")
         if line_length <= 0:
@@ -435,7 +434,6 @@ class RunSettings:
                 accept_min=accept_min,
                 normalisation=normalisation,
                 min_valid_coverage=min_cov,
-                unavailable_bands=unavailable,
             ),
             selection=SelectionSettings(method=sel_method, consensus_radius_m=sel_radius, consensus_window_deg=sel_window),
             seed_lines=tuple(int(k) for k in seed_lines),

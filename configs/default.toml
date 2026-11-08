@@ -92,7 +92,8 @@ neighbour_rings = 3             # rings of neighbouring boxes tried when the cen
 accept_min = 0.50               # tentative; overlap score, not a probability
 # normalisation =               # OPEN: "renormalise_valid" (mean over valid pixels) | "full_kernel"
 # min_valid_coverage =          # OPEN: a band below this valid coverage is unavailable
-# unavailable_bands =           # OPEN: "renormalise" (drop their weight) | "zero" (count as 0)
+# Lines below min_valid_coverage (e.g. outside the block) are unavailable; their weight moves to the
+# mirror line on the other side of the centre (tools/search/scoring.py). This is fixed, not a setting.
 
 [selection]                     # §9, §15: which scored hypothesis a centre reports (peak selection)
 # method =                      # OPEN: "best" (unconstrained winner) | "orientation_consensus"

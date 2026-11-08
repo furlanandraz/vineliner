@@ -182,7 +182,7 @@ class LocalSearch:
                 num = np.moveaxis(prod[:, :C].reshape(T, Th, K, C), 2, 3)
                 den = np.moveaxis(prod[:, C:].reshape(T, Th, K, C), 2, 3)
                 means, cov, avail = band_statistics(num, den, self._totals[j][None, :, None, :], self.scoring.normalisation, self.scoring.min_valid_coverage)
-                S = base_score(means, avail, self.weights, self.centre_position, self.scoring.unavailable_bands)  # (T, Th, C)
+                S = base_score(means, avail, self.weights, self.centre_position)  # (T, Th, C)
                 Sf = np.where(np.isnan(S), -np.inf, S)
                 flat = Sf.reshape(T * Th, C)
                 idx = flat.argmax(axis=0)

@@ -74,7 +74,6 @@ enabled = true                  # user request (2026-11-08): centroid pre-test, 
 [scoring]
 normalisation = "renormalise_valid"  # PICK: missing pixels are not read as soil
 min_valid_coverage = 0.5        # PICK
-unavailable_bands = "renormalise"    # PICK: edge templates are not penalised for bands outside the block
 
 [selection]
 method = "orientation_consensus"  # PICK: 17 % of raw winners in block 0 were off the 40 deg rows,
