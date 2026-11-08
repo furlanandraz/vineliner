@@ -90,7 +90,7 @@ def _run(tmp, overrides, patch=True):
     gpd.GeoDataFrame({"id": [7]}, geometry=[block], crs=crs).to_file(gpkg)
     cfg = merge(load_config(), CONFIG)
     cfg = merge(cfg, {"input": {"rgb": str(tif)}, "vineyards": {"source": str(gpkg), "id_field": "id"}})
-    cfg = merge(cfg, {"kernels": {"cache_dir": str(tmp / "kernel_cache")}})  # keep test kernels out of the project
+    cfg = merge(cfg, {"kernels": {"cache": True, "cache_dir": str(tmp / "kernel_cache")}})  # test kernels stay out of the project
     cfg = merge(cfg, overrides)
     result = run_pipeline(cfg, run_dir=tmp / "run", log=lambda *_: None)
     return result, block

@@ -209,7 +209,7 @@ The range is set in the `[spacing]` table of the run configuration as `min_m`, `
 
 The default reproduces the earlier rule of d0 ±10% at 1% of d0. For d0 = 2.0 m that is 1.80, 1.82, …, 2.20 m: 21 options. For the earlier worked example d0 = 2.2 m it is 1.98 through 2.42 m at 0.022 m steps.
 
-Set the range for the target vineyards. The Bordeaux test data appears to have rows about 1.3–1.5 m apart (§14), outside the 2.0 m default range. `configs/bordeaux.toml` therefore searches 1.20–1.60 m at 0.02 m, again 21 options. This search range is separate from the final geometric validation range (§11, §12).
+Set the range for the target vineyards. The Bordeaux test data appears to have rows about 1.3–1.5 m apart (§14), outside the 2.0 m default range. `configs/centroid-pretest.toml` therefore searches 1.20–1.60 m at 0.02 m, again 21 options. This search range is separate from the final geometric validation range (§11, §12).
 
 ### Search size and retained evidence
 
@@ -421,7 +421,9 @@ Revised 2026-11-07 (§17): `src/` holds only entry files. The importable code is
     ├── pyproject.toml            package metadata and dependencies
     ├── configs/
     │   ├── default.toml          agreed defaults (§12); OPEN keys left unset
-    │   └── bordeaux.toml         per-area settings and first-run PICKs (§14, §18)
+    │   ├── centroid-pretest.toml settings and first-run PICKs for the test data (§14, §18)
+    │   ├── centroid-pretest-cache.toml  extends it: kernel cache on
+    │   └── full-search.toml      extends it: pre-test off (the baseline)
     ├── dof/                      orthophoto inputs; *.tif is git-ignored, .gitkeep keeps the folder
     │   └── bordeaux/             first test pair (§14)
     ├── poly/poly.gpkg            hand-drawn Bordeaux blocks, standing in for classification (§4)
@@ -506,8 +508,8 @@ The first test data is not GURS imagery. Its file headers and pixel statistics w
 Observations and cautions:
 
 - The scene contains several vineyard blocks with different row orientations, separated by roads, plus a bare parcel and buildings. That suits the block-separation and orientation tests (§4).
-- Rough row-spacing estimate: about 1.3–1.5 m, roughly 7 pixels, from autocorrelation on five crops. This is unvalidated, and it lies outside the 1.80–2.20 m default spacing range and below the 1.5–2.5 m Slovenian scope assumption. `configs/bordeaux.toml` sets the search range to 1.20–1.60 m and the validation range to the same values as a starting point.
-- **Band order assumption (2026-11-07):** `nir.tif` is a false-colour product with bands NIR, red, green; `rgb.tif` is red, green, blue. The files do not record this. Evidence: `nir.tif` bands 2 and 3 closely track the RGB red and green bands but are not identical (mean absolute difference ≈ 2.3 DN in a sample). The order is set explicitly in `configs/bordeaux.toml` ([input] `rgb_bands`, `nir_bands`), not inferred from array position (§3). It is recorded as an assumption in README.md.
+- Rough row-spacing estimate: about 1.3–1.5 m, roughly 7 pixels, from autocorrelation on five crops. This is unvalidated, and it lies outside the 1.80–2.20 m default spacing range and below the 1.5–2.5 m Slovenian scope assumption. `configs/centroid-pretest.toml` sets the search range to 1.20–1.60 m and the validation range to the same values as a starting point.
+- **Band order assumption (2026-11-07):** `nir.tif` is a false-colour product with bands NIR, red, green; `rgb.tif` is red, green, blue. The files do not record this. Evidence: `nir.tif` bands 2 and 3 closely track the RGB red and green bands but are not identical (mean absolute difference ≈ 2.3 DN in a sample). The order is set explicitly in `configs/centroid-pretest.toml` ([input] `rgb_bands`, `nir_bands`), not inferred from array position (§3). It is recorded as an assumption in README.md.
 - **NoData and outliers (2026-11-07):** 255 is treated as "no data or outlier". Vegetation never reflects that strongly in any band, so 255 values are water glint, white roofs and similar, never row evidence. A pixel is masked when any band of either file equals 255 (`nodata_rule = "any_band"`). Counts on the full scene:
 
   | Band | Pixels at 255 |
@@ -552,7 +554,7 @@ The following remain deliberately open rather than being silently settled by an 
 
 Use small empirical comparisons to choose these. Preserve the user-approved baseline and document changes to scoring or hypothesis coverage.
 
-Every open choice is an unset key in `configs/default.toml`, and a run refuses to start without it. `configs/bordeaux.toml` sets first-run PICKs for all of them, each with its reason. They are listed in §18, and every run's `report.json` repeats them under `open_choices_set_by_this_run`. Two further open choices arose during implementation:
+Every open choice is an unset key in `configs/default.toml`, and a run refuses to start without it. `configs/centroid-pretest.toml` sets first-run PICKs for all of them, each with its reason. They are listed in §18, and every run's `report.json` repeats them under `open_choices_set_by_this_run`. Two further open choices arose during implementation:
 
 - Peak selection (`[selection]`, §9).
 - Seed filtering and chain smoothing (`[seeds] min_band_mean`, `[reconstruction] chain_smoothing_m`, §10).
@@ -587,7 +589,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 4. **Repository set-up.** `src/` layout, `pyproject.toml` with setuptools, pytest, one module per pipeline stage (§13). Imagery (`*.tif`, `*.tiff`) is git-ignored; `dof/.gitkeep` keeps the input folder.
 5. **Row width means row spacing.** "Row width" is the distance between neighbouring rows, where the tractors drive. Rows are reduced to lines and have no width of their own; the template band width w is only a kernel sampling width (§6).
 6. **Spacing range in the config.** Users set the searched spacing range in `[spacing]` (`min_m`, `max_m`, `step_m`) of a per-area config merged over `configs/default.toml`. `vineliner.config` loads, merges and validates it (§7). The Bordeaux range is 1.20–1.60 m at 0.02 m.
-7. **Bordeaux band order assumed.** `nir.tif` is NIR, red, green and `rgb.tif` is red, green, blue, set in `configs/bordeaux.toml` and recorded in README.md (§14).
+7. **Bordeaux band order assumed.** `nir.tif` is NIR, red, green and `rgb.tif` is red, green, blue, set in `configs/centroid-pretest.toml` and recorded in README.md (§14).
 8. **255 is NoData or outlier on the Bordeaux pair.** Vegetation never reaches 255, so 255 values are water, white roofs and similar. A pixel is masked when any band of either file is 255: 955 pixels, 0.024% (§14).
 9. **Layout: entry files in `src/`, importable modules in `tools/`.** Supersedes the `src/vineliner/` layout of item 4. Subpackages are nested by stage; internal imports are relative, so `tools/` can move into a future QGIS plugin; file formats are confined to `tools/io/` and `tools/export/` (§13).
 10. **Block polygons from `poly/poly.gpkg`.** The user supplied 7 hand-drawn Bordeaux blocks in the raster's own CRS. Automatic classification stays unimplemented; reports call the polygons a fixture (§4).
@@ -595,7 +597,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 12. **Peak selection becomes an explicit option.** `[selection] method` = `best` or `orientation_consensus` (§9). It was added because a 2 m template separates neighbouring rotations weakly: in block 0, 17% of raw winners were off the 40° rows, scoring barely above the 40° hypothesis at the same centre. All hypotheses are still scored and the raw winner is still reported.
 13. **Seed filter and chain smoothing.** Two new open keys: `[seeds] min_band_mean`, a line's own evidence needed to seed, and `[reconstruction] chain_smoothing_m` (§10).
 14. **Score storage modes.** `all`, `winning_spacing` or `none` (§13). Bordeaux uses `winning_spacing`, because `all` would be about 5.9 GB per run.
-15. **First-run PICKs for Bordeaux** are recorded in `configs/bordeaux.toml` and §18. They include two changes found by trial on block 0, recorded there:
+15. **First-run PICKs for Bordeaux** are recorded in `configs/centroid-pretest.toml` and §18. They include two changes found by trial on block 0, recorded there:
     - Translation box `nominal_d0` instead of `tested_d`. With `tested_d`, d = 1.60 m gets 64 translations against 49 for the other spacings, and the larger max pulled 10% of centres onto that range edge.
     - Band width 3 px instead of 1. A 1 px band scores flat across a 3–4 px row stripe, so neighbouring centres placed one row up to 0.6 m apart.
 16. **Evidence scaled per block** (`[evidence] scale_region`, open; Bordeaux PICK `per_block`). Scaling over all blocks let the high-contrast block 1 set the scale: block 0 accepted 234 centres in the full run but 545 when run alone. Per-block scaling makes a block's result independent of the other blocks in the run.
@@ -610,11 +612,12 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 
 23. **Centroid pre-test** (user proposal; `[centroid_pretest]`, §7; first called "blueprint"). A full search of one box at each block's centroid narrows the grid search to ±10° and ±10% around its winner, keeping every phase. The full grid search is used when the centroid is outside the polygon. On for Bordeaux on the `feature/centroid-blueprint` branch; results in §18.
 24. **Neighbouring boxes back up a weak centroid box** (user). Rings of neighbouring boxes, spaced like the grid centres and up to `neighbour_rings`, are tried before falling back to the full grid search.
-25. **Kernel cache** (user). Kernels are saved to `.cache/kernels/` under a key of everything they depend on (template geometry, rotations, spacings, pixel size, coverage method, cache format version) and reused by later runs (`[kernels] cache`, `cache_dir`).
+25. **Kernel cache** (user). Kernels are saved to `.cache/kernels/` under a key of everything they depend on (template geometry, rotations, spacings, pixel size, coverage method, cache format version) and reused by later runs (`[kernels] cache`, `cache_dir`). Off by default; on in `configs/centroid-pretest-cache.toml`.
+26. **Config files named after their settings** (user). `configs/bordeaux.toml` became `configs/centroid-pretest.toml`, so no config name refers to the git-ignored imagery. Variants build on it with a new top-level key, `extends = "other.toml"`: `centroid-pretest-cache.toml` (kernel cache on) and `full-search.toml` (pre-test off). The kernel cache is now off by default, so each file's name says what it turns on.
 
 ## 18. First Bordeaux results (2026-11-07)
 
-These are the first experimental results, from `configs/bordeaux.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
+These are the first experimental results, from `configs/centroid-pretest.toml` on the 7 blocks of `poly/poly.gpkg` (3.2 ha).
 
 **Search size.**
 - 7,947 search centres at 2 m spacing.
@@ -635,7 +638,7 @@ These are the first experimental results, from `configs/bordeaux.toml` on the 7 
 | `scoring.normalisation`, `min_valid_coverage`, `unavailable_bands` | `renormalise_valid`, 0.5, `renormalise` | Missing pixels are not read as soil; edge templates not penalised |
 | `selection.method` | `orientation_consensus`, 6 m, ±5° | 17% of raw winners were off-angle in block 0 |
 | `seeds.lines`, `min_band_mean` | [−1, 0, 1], 0.4 | Inner lines seed neighbouring rows; drops lines on inter-row soil |
-| `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `bordeaux.toml` |
+| `reconstruction.*` | link 10°, 0.25 d, 4 m; smoothing 4 m; growth support 0.4; gap 6 m; join 0.35 d, 20°; limit 1000 m | See comments in `centroid-pretest.toml` |
 | `validation.tolerance_m` | 0.3 | Well inside the ~1 m target |
 | `storage.surfaces` | `winning_spacing` | `all` would be about 5.9 GB per run |
 

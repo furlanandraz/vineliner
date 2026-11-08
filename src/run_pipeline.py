@@ -1,8 +1,8 @@
 """Run the Vineliner pipeline on one area.
 
-    python src/run_pipeline.py configs/bordeaux.toml
-    python src/run_pipeline.py configs/bordeaux.toml --blocks 0 3 --name trial
-    python src/run_pipeline.py configs/bordeaux.toml --plan
+    python src/run_pipeline.py configs/centroid-pretest-cache.toml
+    python src/run_pipeline.py configs/centroid-pretest.toml --blocks 0 3 --name trial
+    python src/run_pipeline.py configs/full-search.toml --plan
 
 Config files after the first are merged on top in order, over configs/default.toml.
 Outputs go to runs/<timestamp>[-name]/.

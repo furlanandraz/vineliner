@@ -233,7 +233,7 @@ class RunSettings:
         # [kernels]
         coverage = r.get("kernels", "coverage", choices=COVERAGE_METHODS)
         samples = r.get("kernels", "subpixel_samples", _REQUIRED if coverage == "sampled" else None, kind=int)
-        use_cache = r.get("kernels", "cache", True, kind=bool)
+        use_cache = r.get("kernels", "cache", False, kind=bool)
         cache_dir = r.get("kernels", "cache_dir", ".cache/kernels", kind=str)
 
         # [spacing], [rotation], [translation], [centres]

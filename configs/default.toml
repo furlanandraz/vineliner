@@ -6,9 +6,10 @@
 #
 # Every run records the exact configuration it used next to its outputs.
 #
-# Per-area settings go in their own file (e.g. configs/bordeaux.toml). That
-# file only needs the keys it changes; it is merged on top of this one:
-#     python src/run_pipeline.py configs/bordeaux.toml
+# Run settings go in their own file, named after what they set (e.g.
+# configs/centroid-pretest.toml). That file only needs the keys it changes; it
+# is merged on top of this one, and may itself `extends = "other.toml"`:
+#     python src/run_pipeline.py configs/centroid-pretest.toml
 # Relative paths are relative to the project root.
 
 [input]                         # §3, §14: set per area
@@ -47,7 +48,7 @@ band_width_px = 1               # kernel sampling width, not a row width; must b
 [kernels]                       # §6.1
 coverage = "exact"              # "exact" | "sampled" (fractional); "centre" | "all_touched" (comparisons)
 # subpixel_samples =            # s for s x s sampling; only used by "sampled"
-cache = true                    # save kernels and reuse them in later runs with the same template,
+cache = false                   # true: save kernels and reuse them in later runs with the same template,
                                 # rotations, spacings, pixel size and coverage (saves ~20 s per run)
 cache_dir = ".cache/kernels"    # relative to the project root; git-ignored
 

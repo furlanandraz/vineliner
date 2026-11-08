@@ -18,9 +18,9 @@ python -m pytest
 ## Running
 
 ```bash
-python src/run_pipeline.py configs/bordeaux.toml               # all blocks
-python src/run_pipeline.py configs/bordeaux.toml --blocks 0 3  # some blocks
-python src/run_pipeline.py configs/bordeaux.toml --plan        # counts only, no search
+python src/run_pipeline.py configs/centroid-pretest-cache.toml               # all blocks
+python src/run_pipeline.py configs/centroid-pretest-cache.toml --blocks 0 3  # some blocks
+python src/run_pipeline.py configs/full-search.toml --plan                   # counts only, no search
 python src/describe_inputs.py dof/bordeaux/rgb.tif poly/poly.gpkg
 ```
 
@@ -115,15 +115,23 @@ Only `io/` and `export/` touch file formats. The other subpackages work on NumPy
 
 ## Configuration
 
-Run defaults are in [configs/default.toml](configs/default.toml). Settings for one area go in their own file, which only needs the keys it changes and is merged on top of the defaults. [configs/bordeaux.toml](configs/bordeaux.toml) is the example.
+Run defaults are in [configs/default.toml](configs/default.toml). Run settings go in their own file, named after what they set. A file only needs the keys it changes, and is merged on top of the defaults. It can also start with `extends = "other.toml"` to build on another file, so variants stay a few lines long:
 
-Settings that PROJECT.md leaves open are unset in the defaults. A run refuses to start until every one of them is set, and it lists all the missing ones at once. In `bordeaux.toml`, each value chosen for an open setting is marked `PICK`, with the reason next to it. These are first-run choices to compare, not validated values. Each run's `report.json` lists them under `open_choices_set_by_this_run`.
+| Config | What it runs |
+| --- | --- |
+| [configs/centroid-pretest.toml](configs/centroid-pretest.toml) | The full settings for the test data: inputs, assumptions and first-run picks. Centroid pre-test on, kernels built every run |
+| [configs/centroid-pretest-cache.toml](configs/centroid-pretest-cache.toml) | The same, with the kernel cache on. The quickest |
+| [configs/full-search.toml](configs/full-search.toml) | The same, without the pre-test: the full grid search baseline, for comparison |
+
+The test data's inputs live in `centroid-pretest.toml`. The file names don't refer to the git-ignored imagery, so a fresh clone isn't confused by them.
+
+Settings that PROJECT.md leaves open are unset in the defaults. A run refuses to start until every one of them is set, and it lists all the missing ones at once. In `centroid-pretest.toml`, each value chosen for an open setting is marked `PICK`, with the reason next to it. These are first-run choices to compare, not validated values. Each run's `report.json` lists them under `open_choices_set_by_this_run`.
 
 ### Faster search: centroid pre-test
 
 ```toml
 [centroid_pretest]
-enabled = true              # on in configs/bordeaux.toml, off in the defaults
+enabled = true              # on in centroid-pretest*.toml, off in the defaults
 theta_window_deg = 10.0     # grid rotations within +/- this of the pre-test direction
 spacing_window_frac = 0.10  # grid spacings within +/- 10 % of the pre-test spacing
 neighbour_rings = 3         # rings of neighbouring boxes tried when the centroid box is weak
@@ -139,7 +147,7 @@ For each block:
 
 ### Kernel cache
 
-The 18,900 template kernels take about 20 s to build. They're saved to `.cache/kernels/` (git-ignored) and reused by later runs with the same template geometry, rotations, spacings, pixel size and coverage method. Any change to those builds a new set automatically. Turn it off with `[kernels] cache = false`.
+The 18,900 template kernels take about 20 s to build. They're saved to `.cache/kernels/` (git-ignored) and reused by later runs with the same template geometry, rotations, spacings, pixel size and coverage method. Any change to those builds a new set automatically. The cache is off by default; `[kernels] cache = true` turns it on, as `centroid-pretest-cache.toml` does.
 
 ### Row spacing (row width)
 

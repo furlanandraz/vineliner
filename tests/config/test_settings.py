@@ -7,7 +7,7 @@ import pytest
 
 from tools.config import CONFIG_DIR, PROJECT_ROOT, ConfigError, RunSettings, load_config, merge, read_toml
 
-BORDEAUX = CONFIG_DIR / "bordeaux.toml"
+PRETEST = CONFIG_DIR / "centroid-pretest.toml"
 DEFAULT = read_toml(CONFIG_DIR / "default.toml")
 
 
@@ -40,8 +40,8 @@ def test_defaults_alone_are_refused_and_every_open_key_is_listed():
         assert key in message
 
 
-def test_bordeaux_settings_build():
-    s = RunSettings.from_config(load_config(BORDEAUX))
+def test_centroid_pretest_settings_build():
+    s = RunSettings.from_config(load_config(PRETEST))
     assert s.input.rgb == PROJECT_ROOT / "dof" / "bordeaux" / "rgb.tif"
     assert s.input.nir_bands == ("nir", "red", "green")
     assert s.input.rgb_bands == ("red", "green", "blue")
@@ -52,19 +52,19 @@ def test_bordeaux_settings_build():
 
 
 def test_bad_weights_are_refused():
-    cfg = merge(load_config(BORDEAUX), {"template": {"weights": [0.10, 0.20, 0.50, 0.20, 0.10]}})
+    cfg = merge(load_config(PRETEST), {"template": {"weights": [0.10, 0.20, 0.50, 0.20, 0.10]}})
     with pytest.raises(ConfigError, match="sum to"):
         RunSettings.from_config(cfg)
 
 
 def test_seed_lines_must_be_template_lines():
-    cfg = merge(load_config(BORDEAUX), {"seeds": {"lines": [0, 3]}})
+    cfg = merge(load_config(PRETEST), {"seeds": {"lines": [0, 3]}})
     with pytest.raises(ConfigError, match="seeds"):
         RunSettings.from_config(cfg)
 
 
 def test_bad_choice_is_refused():
-    cfg = merge(load_config(BORDEAUX), {"translation": {"box": "huge"}})
+    cfg = merge(load_config(PRETEST), {"translation": {"box": "huge"}})
     with pytest.raises(ConfigError, match="choose one of"):
         RunSettings.from_config(cfg)
 
@@ -84,3 +84,29 @@ def test_merge_does_not_modify_inputs():
     merged = merge(base, {"t": {"y": 3}})
     assert merged == {"t": {"x": 1, "y": 3}}
     assert base == {"t": {"x": 1, "y": 2}}
+
+
+def test_variants_extend_the_pretest_config():
+    base = RunSettings.from_config(load_config(PRETEST))
+    cached = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest-cache.toml"))
+    full = RunSettings.from_config(load_config(CONFIG_DIR / "full-search.toml"))
+    assert base.centroid_pretest.enabled and base.kernels.cache_dir is None
+    assert cached.centroid_pretest.enabled and cached.kernels.cache_dir == PROJECT_ROOT / ".cache" / "kernels"
+    assert not full.centroid_pretest.enabled and full.kernels.cache_dir is None
+    # Everything else is inherited unchanged.
+    assert cached.input == base.input == full.input
+    assert cached.spacing == base.spacing == full.spacing
+    assert "extends" not in load_config(CONFIG_DIR / "centroid-pretest-cache.toml")
+
+
+def test_extends_chain_is_relative_to_the_file_and_cycles_are_refused(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.toml").write_text("[spacing]\nmin_m = 1.0\nmax_m = 1.4\nstep_m = 0.2\n")
+    (tmp_path / "sub" / "b.toml").write_text('extends = "../a.toml"\n[spacing]\nmax_m = 1.2\n')
+    (tmp_path / "c.toml").write_text('extends = "sub/b.toml"\n[centres]\nspacing_m = 3.0\n')
+    cfg = load_config(tmp_path / "c.toml")
+    assert (cfg["spacing"]["min_m"], cfg["spacing"]["max_m"], cfg["centres"]["spacing_m"]) == (1.0, 1.2, 3.0)
+    (tmp_path / "x.toml").write_text('extends = "y.toml"\n')
+    (tmp_path / "y.toml").write_text('extends = "x.toml"\n')
+    with pytest.raises(ValueError, match="cycle"):
+        load_config(tmp_path / "x.toml")

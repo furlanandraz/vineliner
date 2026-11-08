@@ -1,0 +1,9 @@
+# Centroid pre-test with the kernel cache.
+#
+# The same as centroid-pretest.toml, but the template kernels are saved to
+# .cache/kernels/ and reused by later runs with the same template, rotations,
+# spacings, pixel size and coverage (about 20 s saved per run).
+extends = "centroid-pretest.toml"
+
+[kernels]
+cache = true
