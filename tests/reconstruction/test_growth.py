@@ -111,3 +111,48 @@ def test_direction_follows_the_evidence_within_the_turn_limit():
     last = r.points[-1] - r.points[-2]
     assert axial_difference(math.degrees(math.atan2(last[1], last[0])), 10.0) <= 1.0
     assert r.end.state == "boundary"
+
+
+def angled_row(row_id, tip, angle_deg, length=4.0):
+    """A row whose free start is `tip`, running east and down at angle_deg; its far end does not grow."""
+    a = math.radians(angle_deg)
+    far = (tip[0] + length * math.cos(a), tip[1] - length * math.sin(a))
+    r = row(row_id, tip, far)
+    r.end = Endpoint(state="boundary")
+    return r
+
+
+def east_row(row_id, x0, x1, y=5.0):
+    """A row growing east from x1; its west end does not grow."""
+    r = row(row_id, (x0, y), (x1, y))
+    r.start = Endpoint(state="boundary")
+    return r
+
+
+def test_same_row_coming_the_other_way_joins_head_on():
+    # The other row's tip lies 0.45 m to the side: more than the join allows (0.375 m),
+    # less than half a row spacing (0.75 m). Row 0's step lands on it.
+    rows, g = grow([east_row(0, 10, 20), angled_row(1, (20.5, 5.45), 12.0)], everywhere())
+    assert g.head_on_joins == 1 and len(g.joins) == 1
+    (r,) = rows
+    assert {r.id, *r.joined_rows} == {0, 1}
+    steps = np.diff(xs(r))
+    assert np.all(steps > 0)  # one line running east, without stepping back
+
+
+def test_neighbouring_row_is_not_joined_head_on():
+    # The tip lies 0.8 m to the side, more than half a row spacing: the neighbouring row.
+    rows, g = grow([east_row(0, 10, 20), angled_row(1, (19.5, 5.8), 18.0)], everywhere())
+    assert g.head_on_joins == 0 and g.joins == []
+    assert next(x for x in rows if x.id == 0).end.state == "conflict"
+
+
+def test_last_step_to_the_boundary_goes_straight():
+    # Near the east edge the evidence prefers a 10 deg turn, but every step there leaves the block.
+    def scorer(x, y, theta, j):
+        preferred = 10.0 if x > 49 else 0.0
+        return 0.9 if axial_difference(theta, preferred) <= 1.0 else 0.6
+
+    (r,), _ = grow([east_row(0, 20.3, 22.3)], scorer)
+    assert r.end.state == "boundary"
+    assert r.points[-1][0] == pytest.approx(50) and r.points[-1][1] == pytest.approx(5)

@@ -21,7 +21,7 @@ CONFIG = {
     "spacing": {"nominal_m": 1.5, "min_m": 1.4, "max_m": 1.6, "step_m": 0.05},
     "translation": {"box": "nominal_d0"},
     "centres": {"spacing_m": 3.0},
-    "scoring": {"normalisation": "renormalise_valid", "min_valid_coverage": 0.5, "unavailable_bands": "renormalise"},
+    "scoring": {"normalisation": "renormalise_valid", "min_valid_coverage": 0.5},
     "selection": {"method": "orientation_consensus", "consensus_radius_m": 6.0, "consensus_window_deg": 5.0},
     "seeds": {"lines": [-1, 0, 1], "min_band_mean": 0.4},
     "reconstruction": {

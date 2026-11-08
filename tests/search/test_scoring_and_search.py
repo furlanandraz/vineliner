@@ -15,18 +15,40 @@ ALL = np.ones(5, bool)
 def test_agreed_equal_totals():
     centre_only = np.array([0, 0, 1, 0, 0], float)
     neighbours_only = np.array([1, 1, 0, 1, 1], float)
-    for policy in ("zero", "renormalise"):
-        assert base_score(centre_only, ALL, W, 2, policy) == pytest.approx(0.50)
-        assert base_score(neighbours_only, ALL, W, 2, policy) == pytest.approx(0.50)
+    assert base_score(centre_only, ALL, W, 2) == pytest.approx(0.50)
+    assert base_score(neighbours_only, ALL, W, 2) == pytest.approx(0.50)
 
 
-def test_unavailable_bands():
-    means = np.array([0.0, 1.0, 1.0, 1.0, 1.0])
-    avail = np.array([False, True, True, True, True])
-    assert base_score(means, avail, W, 2, "zero") == pytest.approx(0.95)
-    assert base_score(means, avail, W, 2, "renormalise") == pytest.approx(1.0)
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        ([1, 1, 1, 1, 1], [0.05, 0.20, 0.50, 0.20, 0.05]),
+        ([1, 1, 1, 1, 0], [0.10, 0.20, 0.50, 0.20, 0.00]),  # outer line outside: its 0.05 moves to the other outer line
+        ([1, 1, 1, 0, 0], [0.10, 0.40, 0.50, 0.00, 0.00]),  # one side outside: 0.50 / 0.40 / 0.10
+        ([0, 1, 1, 0, 0], [0.00, 0.40 / 0.9, 0.50 / 0.9, 0.00, 0.00]),  # a line and its mirror both out: rescaled
+        ([0, 0, 1, 0, 0], [0.00, 0.00, 1.00, 0.00, 0.00]),
+    ],
+)
+def test_weights_of_lines_outside_are_mirrored(available, expected):
+    from tools.search import mirrored_weights
+
+    w = mirrored_weights(W, np.array(available, bool))
+    assert w / w.sum() == pytest.approx(expected)
+
+
+def test_equal_weights_lean_on_the_lines_inside():
+    from tools.search import mirrored_weights
+
+    w = mirrored_weights([0.2] * 5, np.array([1, 1, 1, 0, 0], bool))
+    assert w == pytest.approx([0.4, 0.4, 0.2, 0.0, 0.0])  # the centre line nearest the edge keeps only 0.2
+
+
+def test_score_with_lines_outside():
+    means = np.array([0.6, 0.8, 1.0, 0.0, 0.0])
+    one_side = np.array([True, True, True, False, False])
+    assert base_score(means, one_side, W, 2) == pytest.approx(0.1 * 0.6 + 0.4 * 0.8 + 0.5 * 1.0)
     no_centre = np.array([True, True, False, True, True])
-    assert np.isnan(base_score(means, no_centre, W, 2, "zero"))
+    assert np.isnan(base_score(means, no_centre, W, 2))
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +62,7 @@ def setup():
     spacings = (1.40, 1.45, 1.50, 1.55, 1.60)
     bank = KernelBank(template, thetas, spacings, SYNTHETIC_PIXEL, SYNTHETIC_PIXEL, "exact")
     space = SearchSpace(thetas, spacings, SYNTHETIC_PIXEL, SYNTHETIC_PIXEL, "nominal_d0", 1.5)
-    scoring = ScoringSettings(0.5, "renormalise_valid", 0.5, "renormalise")
+    scoring = ScoringSettings(0.5, "renormalise_valid", 0.5)
     search = LocalSearch(bank, space, scoring, W, 2)
     return grid, V * M, M, bank, space, scoring, search
 
