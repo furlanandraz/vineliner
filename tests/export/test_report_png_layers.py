@@ -10,7 +10,7 @@ import pytest
 from pyproj import CRS
 from shapely.geometry import LineString, Point, box
 
-from tools.export import block_records, bridge_layer, issue_layer, open_choices, write_outputs, write_png, write_report
+from tools.export import block_records, bridge_layer, issue_layer, open_choices, to_display, write_outputs, write_png, write_report
 from tools.reconstruction import RowSection
 from tools.validation import Issue
 from tools.vineyards import make_blocks
@@ -96,3 +96,15 @@ def test_write_outputs_writes_empty_review_layers_and_skips_others(tmp_path):
     assert (tmp_path / "shapefiles" / "issues.shp").exists()
     assert "joins" in written["skipped_empty"] and "issues" in written["empty"]
     assert len(gpd.read_file(tmp_path / "vineliner.gpkg", layer="issues")) == 0
+
+
+def test_overlay_background_from_rgb_bytes_or_stretched_floats():
+    valid = np.ones((2, 3), bool)
+    valid[0, 0] = False
+    rgb = [np.full((2, 3), v, np.uint8) for v in (10, 20, 30)]
+    out = to_display(rgb, valid)
+    assert out.dtype == np.uint8 and out.shape == (3, 2, 3) and out[:, 1, 1].tolist() == [10, 20, 30]  # bytes as they are
+    nir = np.array([[np.nan, 0.0, 100.0], [200.0, 300.0, 400.0]], np.float32)
+    gray = to_display([nir] * 3, valid, percentiles=(0.0, 100.0))
+    assert gray[0].tolist() == [[0, 0, 63], [127, 191, 255]]  # stretched over valid pixels; invalid is black
+    assert (gray[0] == gray[2]).all()
