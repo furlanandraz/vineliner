@@ -3,7 +3,7 @@
 Date: 2026-11-06, revised 2026-11-07 (see §17)  
 Status: agreed direction for an initial experiment. A first implementation of the full pipeline exists (2026-11-07, §13, §18); its results are experimental.  
 Preferred language: Python.  
-Target imagery: Slovenian GURS orthophotos. First test data on hand: a 0.20 m Bordeaux RGB + NIR pair in `dof/bordeaux/` (§14).
+Target imagery: Slovenian GURS orthophotos. First test data on hand: a 0.20 m Bordeaux RGB + NIR pair in `dof/bordeaux/` (§14). Second: the Cremons multispectral drone flight in `dof/cremons/` (§14, §19).
 
 ## 1. Purpose and scope
 
@@ -57,6 +57,8 @@ The first version expects a north-up analysis raster: an affine transform with n
 
 If RGB and NIR are combined, align them spatially and document the resampling and band mapping. GURS DOF050IR is a false-colour IR/R/G product, not an ordinary RGB file with a fourth NIR band. Do not infer band semantics solely from array position.
 
+**Implemented** (2026-11-12): `src/prepare_inputs.py` (`tools/io/warp.py`) reprojects any set of layers onto one north-up grid in a stated projected CRS and pixel size, with stated resampling (`average` by default). It writes the source, source CRS and pixel size, resampling and PROJ's datum transformation into each output's GeoTIFF tags, which every run's `report.json` repeats, and into `prepare.json`. The pipeline itself still refuses geographic CRSs and layers on different grids.
+
 ## 4. Vineyard polygons and block separation
 
 Vineyard classification is the first intended processing stage. Its result defines the permitted processing area and separates planting blocks that may have different row orientations.
@@ -84,19 +86,20 @@ No particular filter, threshold or RGB/NIR weighting has been selected. A vegeta
 
 Prefer retaining a continuous row-evidence raster V in [0,1] for scoring and diagnostics. Binary thresholded imagery can be a configurable experiment. Define polarity explicitly: high V must mean stronger row evidence, even if the original rows are dark in grayscale.
 
-**Implemented** (`tools/imagery/evidence.py`, `[evidence]`). V mixes up to two components, each a raw response scaled to [0,1]:
+**Implemented** (`tools/imagery/evidence.py`, `[evidence]`). V mixes one component per input layer in use (RGB, NIR, NDVI; each optional, revised 2026-11-12, §17). Each is a raw response scaled to [0,1]:
 
-    V = (1 - ndvi_weight) * V_gray + ndvi_weight * V_ndvi
+    V = sum_k w_k * V_k,  w_k = weight_k / sum of the weights of the layers in use
 
-- **Gray component** (mean of the configured bands).
+- **RGB component** (`rgb_weight`; gray = mean of the configured bands; rows darker than the ground).
   - `black_tophat`: closing(gray) − gray with a square window. Keeps narrow dark rows, removes broad soil-brightness changes. 0 maps to 0 and the `scale_percentile` maps to 1.
   - `gray_stretch`: inverted gray between two percentiles.
-- **NDVI component** (optional `[input] ndvi` raster; vines are greener than soil).
-  - `white_tophat`: ndvi − opening(ndvi). Narrow green features.
-  - `stretch`: ndvi between two percentiles.
+- **NIR component** (`nir_weight`; the band named `nir` of the NIR layer; canopy brighter than the ground) and **NDVI component** (`ndvi_weight`; vines are greener than soil). Both use:
+  - `white_tophat`: image − opening(image). Narrow bright features.
+  - `stretch`: the image between two percentiles.
+- **Layers in use.** A layer is in use when its path is set and its `[input] use_*` switch is on. A switched-off or missing layer drops out and the other weights are rescaled. Only components with weight > 0 need a method.
 - **Scaling region** (`scale_region`, open): `per_block` scales each block on its own statistics; `all_blocks` uses one scale for every block.
 - Invalid pixels are replaced by the median valid value before filtering, so they cannot leak into neighbours, and V is 0 there.
-- `ndvi_weight = 0` (the default) is the RGB-only baseline. NDVI's contribution is tested in §18.
+- The defaults (`rgb_weight = 1`, `nir_weight = ndvi_weight = 0`) are the RGB-only baseline. NDVI's contribution on Bordeaux is tested in §18, the layers on Cremons in §19.
 
 The downscaled fingerprint analogy is useful for recognising vineyard texture. Coarse-scale classification must still preserve the finer imagery needed for row placement. No fixed downsampling factor has been selected.
 
@@ -432,7 +435,7 @@ Also compare representative results against manually inspected or annotated imag
 | Traversal order | Centre outward; still evaluate every phase |
 | Rotation search | 0–179 degrees, 1-degree increments |
 | Acceptance | Base overlap score >= 0.50 |
-| Row evidence | Gray top-hat or stretch, optional NDVI component; scaling region open (§5) |
+| Row evidence | One component per input layer in use (RGB gray, NIR, NDVI), relative weights; top-hat or stretch each; scaling region open (§5) |
 | Peak selection | Open: unconstrained best or orientation consensus (§9) |
 | Seeds | Open: which template lines seed, and the minimum own-line evidence (§10) |
 | Search-centre spacing | To determine; favour sufficiently dense placement; centres on pixel centres |
@@ -475,18 +478,22 @@ Revised 2026-11-07 (§17): `src/` holds only entry files. The importable code is
     │   ├── default.toml          agreed defaults (§12); OPEN keys left unset
     │   ├── centroid-pretest.toml settings and first-run PICKs for the test data (§14, §18)
     │   ├── centroid-pretest-cache.toml  extends it: kernel cache on
-    │   └── full-search.toml      extends it: pre-test off (the baseline)
+    │   ├── full-search.toml      extends it: pre-test off (the baseline)
+    │   └── multispectral.toml    RGB + NIR + NDVI layers, Cremons drone data (§14, §19)
     ├── dof/                      orthophoto inputs; *.tif is git-ignored, .gitkeep keeps the folder
-    │   └── bordeaux/             first test pair (§14)
+    │   ├── bordeaux/             first test pair (§14)
+    │   └── cremons/              prepared drone layers (§14)
     ├── poly/poly.gpkg            hand-drawn Bordeaux blocks, standing in for classification (§4)
-    ├── runs/                     run outputs, created at run time, git-ignored
+    ├── poly/cremons.gpkg         the user's Cremons block, moved into the August mosaic's frame (§14)
+    ├── runs/                     run outputs, created at run time, git-ignored ([export] runs_dir)
     ├── src/                      entry files only
-    │   ├── run_pipeline.py       run the pipeline for a config (--blocks, --plan)
+    │   ├── run_pipeline.py       run the pipeline for a config (--blocks, --layers, --plan)
+    │   ├── prepare_inputs.py     reproject layers onto one projected analysis grid (§3)
     │   └── describe_inputs.py    print raster/polygon metadata
     ├── tools/
     │   ├── config/               loader.py, spacing.py, settings.py: load, merge, validate (§12)
     │   ├── geo/                  grid.py (world <-> array, once), angles.py (§3, §6)
-    │   ├── io/                   raster.py (rasterio), vector.py (GeoPandas): file adapters
+    │   ├── io/                   raster.py (rasterio), vector.py (GeoPandas), warp.py (reprojection): file adapters
     │   ├── imagery/              masks.py (valid mask, §14), evidence.py (V in [0,1], §5)
     │   ├── vineyards/            blocks.py (polygons, masks), classify.py (not implemented) (§4)
     │   ├── template/             geometry.py (§6), kernels.py (§6.1)
@@ -581,6 +588,32 @@ Observations and cautions:
   - It separates vegetation from soil clearly at scene scale, for example the grass verges. At full resolution it is smoother than the RGB: its pixel-to-pixel gradient relative to its contrast is half that of the red band. Rows show only faintly in some blocks.
 - **Blocks.** `poly/poly.gpkg` (supplied 2026-11-07) holds 7 hand-drawn blocks, 0.2–0.8 ha each and 3.2 ha in total, in the raster's own CRS. Its `id` field is empty, so blocks are numbered 0–6 in file order.
 
+### Drone data in the repository: `dof/cremons/` (2026-11-12)
+
+A DJI Terra 4.4 multispectral flight of 2025-08-22, `Cormons_20250822_MS`, supplied by the user as "Cremons". It covers one row-trained block in FVG, Italy, of about 84 m × 111 m. The provider was said to have no original RGB and NIR channels, but the delivered `map/` folder holds them. They were inspected with rasterio on 2026-11-12:
+
+| File | Content | Grid |
+| --- | --- | --- |
+| `result.tif` | RGB + alpha, uint8, NoData 0 | 11647 × 15467 px, 0.7 cm |
+| `result_NIR.tif`, `_Red`, `_Green`, `_RedEdge` | float32 reflectance, NoData NaN | 6862 × 9112 px, 1.2 cm |
+| `index_map/NDVI.tif`, `GNDVI.tif`, `NDRE`, `LCI`, `OSAVI` | float32 index, NoData 0 | same 1.2 cm grid |
+| `index_map_color/*_local.tif` | colour rendering (RGBA), no CRS, local metric frame | 1.2 cm |
+| `dsm.tif`, `segment.tif` | surface model; DJI semantic classes (tree, building, ...) | not used |
+
+- **Georeferencing.** Every analysis raster is in WGS 84 (EPSG:4326), in its GeoTIFF tags, its `.prj` and its `.tfw`. The DJI log records "Output geo descriptor EPSG:4326" and "GCP is empty". The raster centre (13.460973, 45.971100) equals `config.json`'s centre. Only the `_local` colour maps lack a CRS; they are renderings, not measurements, and are not used.
+- **Target CRS.** RDN2008 / UTM zone 33N (EPSG:6708, N-E axis order, coordinates as EPSG:7792), the system declared by the FVG regional datasets on the INSPIRE geoportal. EPSG:6708 round-trips through GeoTIFF, GeoPackage and shapefile with x as easting. PROJ uses the null transformation "RDN2008 to WGS 84 (1)" (accuracy 1 m).
+- **Analysis grid: 0.20 m.** At 1.2 cm, a 2.6 m translation box would be 26² = 676 phases with kernels 2.7× larger, about 1.6 billion sparse weights. At 0.20 m it is 169 phases, about 150 million weights (1.2 GB). Three pixels of band width are then 0.6 m, the canopy width seen in the NIR. All layers are averaged onto one 431 × 566 px grid (`src/prepare_inputs.py`, command in `configs/multispectral.toml`).
+- **Band check.** NDVI = (NIR − red) / (NIR + red) from `result_NIR` and `result_Red`: r = 0.9992, mean absolute difference 0.002. The bands are what their names say.
+- **Rows.** 15 rows at about 115° (24° west of north), 2.57–2.64 m apart (across-row NIR profiles in 15 × 15 m patches), with grassed inter-rows. The rightmost row runs partly under a tree verge.
+- **Profiles across the rows.** NIR has one sharp canopy peak about 0.6 m wide. NDVI and GNDVI peak on the canopy, but the inter-row grass is also high (NDVI 0.74 against 0.89). RGB gray is darker on the canopy than on the grass (as on Bordeaux); blue has the strongest RGB contrast.
+- **Row contrast by layer** (folded profiles in 18 patches of 12 × 12 m; (canopy mean − mean ≥ 0.7 m away) / std, median): NIR 1.9, GNDVI 1.8, NDVI 1.7, RGB gray 0.8, blue alone 1.1. Top-hat windows of 1.4–2.0 m and stretches score alike; at 0.6 m all are worse.
+- **Block.** The user drew the block (`Cormons_20250606/map/index_map/polygon.gpkg`) on the June flight's `NDVI_local.tif`. Its file says EPSG:4326, but its coordinates are local metres (−11..66, −78..13). It was moved in three steps, recorded in `poly/cremons.gpkg` (id 1, 3365 m²):
+  1. Local metres to June image pixels (`NDVI_local.tif` transform), then to lon/lat with the June DJI georeferencing (`NDVI.tif`), then to EPSG:6708.
+  2. The August mosaic's offset from June, measured by phase correlation of the two NDVI mosaics on the 0.20 m grid: −0.97 m east, −1.09 m north.
+  3. Cross-check: against the user's GCP-corrected June mosaic (`NDVI_modified.tif`, QGIS Georeferencer, 15 GCPs) the August offset is 0.01 m / 0.06 m. So the August mosaic is aligned with the corrected June one without GCPs of its own. An affine fit to the GCPs (RMS 0.26 m) moves the vertices up to 0.75 m differently from the measured shift; the shift was used, as it is measured against the August imagery.
+- **The block's edges.** It runs about 0.5 m beyond the row tops and about 2 m beyond the row ends at the bottom, takes in the verge row on the right, passes a little outside the August data on the left, and includes a parked car in the bottom-right corner (380800–380803, 5091951–5091956). Rows are bridged to the boundary across the headland strips.
+- Capture date 2025-08-22 (folder name and log). Absolute position rests on the drone's GNSS; the mosaic agrees with the GCP-corrected June mosaic.
+
 ### Sentinel suitability
 
 Sentinel-2 is georeferenced, but its highest-resolution RGB and broad NIR bands have 10 m pixels. That is inadequate for directly resolving rows separated by approximately 2 m. Resampling to a finer output grid cannot recover those row details. Sentinel may be useful for larger-scale context or parcel-level monitoring; it is not the initial row-extraction test source.
@@ -674,6 +707,16 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 32. **Mirrored weights at block edges** (user; fixed, §8). The weight of a template line outside the block moves to its mirror line: 0.50 / 0.40 / 0.10 with one side outside, instead of 0.67 / 0.27 / 0.07. The `[scoring] unavailable_bands` option is gone, and `[template] indices` must be symmetric about 0. Equal weights of 0.2, tried as config, were much worse (§18).
 33. **Head-on joins** (§10). Most rows lost after mirroring broke where two pieces of one row met head-on, 0.37–0.55 m apart sideways: just over the join's 0.36 m. Both stopped as a conflict and were removed as hanging. A conflict with a free end of the same row now joins.
 34. **Rows end along their own direction** (§10). Following the edge was tried first: when a step would leave the block, it took a supported turn that stayed inside. The user ruled out an angle rule, since rows really do end at long edges. Edge following made 15 steps on Bordeaux with no measurable effect, and it bent synthetic row ends by up to 0.45 m along the boundary. It was replaced by the opposite: the last step to the boundary goes straight.
+
+### 2026-11-12
+
+35. **Input layers are optional, each with a switch** (user). RGB, NIR and NDVI are each optional, and at least one must be in use. `[input] use_rgb`, `use_nir`, `use_ndvi` (default true) switch a layer off without removing its path; `--layers` does it for one run. A switched-off layer is not read at all. The first layer in use (RGB, else NIR, else NDVI) sets the grid, and the others must share it. Before, RGB was required.
+36. **Relative evidence weights and a NIR component** (§5). `rgb_weight`, `nir_weight` and `ndvi_weight` are rescaled over the layers in use, so a switch needs no other edit. The NIR component uses the band named `nir`, with `white_tophat` or `stretch` (canopy bright). Only components in use need their method, so `[evidence] method` is required only when the RGB component is used. `ndvi_weight` was a share (V = (1 − w) V_gray + w V_ndvi) and is now a relative weight. Every committed config has it at 0, so every earlier result is unchanged: the Bordeaux run `20261112-120024-multispectral-check` gives the same 313 rows, geometries and attributes as `20261108-220040-edge-final`. The comment in `centroid-pretest.toml` now says how to repeat the 0.3 test.
+37. **NoData per file.** With `nodata_value` unset, each RGB and NIR file's own declared NoData applies; before, the RGB file's applied to both. NaN (and infinity) is always NoData, since `x == NaN` never matches.
+38. **Preparation step** (§3, user: "use the Italian CRS for FVG"). `src/prepare_inputs.py` puts layers on one projected grid with explicit resampling and recorded provenance. The Cremons layers go to RDN2008 / UTM zone 33N (EPSG:6708) at 0.20 m, averaged (§14).
+39. **Run outputs per area** (user: Cremons runs in `runs/cremons/`). `[export] runs_dir`, default `runs`.
+40. **Cremons block from the user** (§14). The user's polygon was supplied in the June flight's local frame under an EPSG:4326 label. It was moved into the August mosaic's frame by the measured June-to-August shift. A provisional block drawn from the NIR before it arrived was discarded.
+41. **Config name.** The Cremons config is `configs/multispectral.toml`, named after what it sets (item 26): the three layers together. It extends `centroid-pretest-cache-row-estimate-numbering.toml` and replaces the inputs and area-specific picks.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -937,3 +980,24 @@ All runs use `centroid-pretest-cache-row-estimate-numbering.toml`. Rows are grou
 - **Geometry.** No dangling ends, crossings or turns over 20° in any run.
 - **Synthetic test.** Every true row is within 0.3 m (Hausdorff) of its detected row. Before the last-step rule, ends at a 25° edge overshot by up to 0.55 m.
 
+
+## 19. First Cremons results (2026-11-12)
+
+All runs use `configs/multispectral.toml` on the user's block (3365 m², 833 centres) at 0.20 m, in `runs/cremons/`. They differ only in `--layers` (and, for GNDVI, `ndvi = "dof/cremons/gndvi.tif"`). Each takes about 20 s with cached kernels. "Off the NIR rows" is the distance from 1 m samples along each run's rows to the nearest row of the NIR run.
+
+| Layers (`--layers`) | Rows | Row numbers | Length | High / medium / low | For review | Bridged | Off the NIR rows (mean / 95%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RGB + NIR + NDVI (`…110012-all-layers`) | 16 | 1–15 | 1.34 km | 5 / 8 / 3 | 3 | 52 m | 0.11 / 0.37 m |
+| NIR (`…110132-nir`) | 16 | 1–15 | 1.32 km | 4 / 9 / 3 | 3 | 56 m | – |
+| NDVI (`…110154-ndvi`) | 16 | 1–15 | 1.29 km | 8 / 7 / 1 | 1 | 19 m | 0.07 / 0.18 m |
+| NIR + NDVI (`…110258-nir-ndvi`) | 16 | 1–15 | 1.30 km | 5 / 8 / 3 | 3 | 68 m | 0.04 / 0.16 m |
+| GNDVI in the NDVI slot (`…110237-gndvi`) | 17 | 1–16 | 1.31 km | 3 / 10 / 4 | 5 | 64 m | 0.11 / 0.25 m |
+| RGB (`…110216-rgb`) | 15 | 1–15 | 1.19 km | 0 / 11 / 3 (+1 estimated) | 5 | 56 m | 0.32 / 0.78 m |
+
+- **Same rows.** Every layer finds the block's 15 rows, and every row reaches the boundary at both ends. No run has crossings or dangling ends. The pre-test finds 115°, 2.60 m on the centroid box in every run.
+- **NIR, NDVI and their mix agree within 0.1 m** on average. Two sections share number 1: the leftmost row, broken where it runs along the August data edge.
+- **NDVI has the fewest flags** (1 for review, 19 m bridged). Part of that is grass: NDVI is high on grassed headlands and canopy gaps, so it supports growth there where NIR reports a bridge (NIR: 19 m bridged at the boundary and 37 m inside; NDVI: 6 m and 12 m).
+- **RGB works alone, but is the weakest.** No high-confidence rows, rows wobble, and they sit 0.3 m from the NIR rows on average. That fits dark-row evidence that includes the canopy's shadow (§2). At a third of the weight it pulls the mixed rows by 0.1 m.
+- **The verge row** (row 15) is low confidence in every NIR-based run: about half of it lies under the tree verge.
+- **GNDVI** adds one spurious 12 m row beyond the left data edge (91% bridged, low confidence, flagged), and finds only 14 m of the verge row.
+- **Open.** The weights in `multispectral.toml` are equal first-run picks. NIR + NDVI or NDVI alone may be better choices; deciding needs reference rows (item 21).
