@@ -43,9 +43,11 @@ from ..reconstruction import (
     find_gaps,
     gap_point,
     link_seeds,
+    number_rows,
     row_width,
     rows_from_chains,
     seeds_from_selection,
+    squash_pieces,
 )
 from ..search import (
     RIDGE_FIELDS,
@@ -67,6 +69,7 @@ from ..validation import (
     check_block,
     evidence_along,
     mark_estimated,
+    mark_numbered,
     mean_evidence,
     meets_boundary_twice,
     review_section,
@@ -369,7 +372,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             removed_reviews = review_all(removed, stats_all)
         issues, stats, vsummary = check_block(sections, block.polygon, settings.validation, block.id)
 
-        estimated, gaps, width_info = [], [], None
+        estimated, gaps, width_info, squashed = [], [], None, set()
         if settings.missing_row_estimate.enabled and sections:
             mre = settings.missing_row_estimate
             width, width_info = row_width(sections, stats, float(np.median([sec.spacing_m for sec in sections])))
@@ -384,6 +387,15 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
                     settings.smoothing.max_turn_deg if settings.smoothing.enabled else None,
                 )
                 next_id["section"] += len(estimated)
+                if mre.merge_pieces and estimated and removed:
+                    # Squash removed hanging pieces that lie on an estimated row into it.
+                    estimated, squashed = squash_pieces(
+                        estimated, removed, width, mre.merge_buffer_frac, mre.merge_min_inside_frac, mre.merge_max_angle_deg,
+                        ev_by_id, block.polygon, settings.validation.tolerance_m,
+                        settings.smoothing.max_turn_deg if settings.smoothing.enabled else None, meets_boundary_twice,
+                    )
+                    removed_reviews = [rec for rec, sec in zip(removed_reviews, removed) if sec.id not in squashed]
+                    removed = [sec for sec in removed if sec.id not in squashed]
                 for sec in estimated:
                     along[sec.id] = evidence_along(sec, scorer)
                     ev_by_id[sec.id] = mean_evidence(along[sec.id])
@@ -398,10 +410,25 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         for rec, sec in zip(reviews, sections):
             if "estimated" in sec.flags:
                 mark_estimated(rec, sec)
+        numbering = None
+        if settings.row_numbering.enabled and sections:
+            # Number the final rows with the block's row width (from the estimate when it ran).
+            d = width_info.get("row_width_m") if width_info else None
+            if d is None:
+                d, _ = row_width(sections, stats, float(np.median([sec.spacing_m for sec in sections])))
+            if d is None:
+                d = float(np.median([sec.spacing_m for sec in sections]))
+            numbering = number_rows(sections, d, settings.row_numbering.transect_interval_m)
+            for rec, sec in zip(reviews, sections):
+                mark_numbered(rec, numbering.numbers[sec.id], numbering.ok[sec.id])
+        vsummary["row_numbering"] = numbering.describe() if numbering else None
         vsummary["missing_row_estimate"] = None if width_info is None else width_info | {
             "gaps_too_wide": len(gaps),
             "gaps_filled": sum(g.filled for g in gaps),
             "rows_added": len(estimated),
+            "rows_with_squashed_pieces": sum(1 for sec in estimated if sec.detected_m),
+            "pieces_squashed": len(squashed),
+            "squashed_m": round(sum(sec.detected_m or 0.0 for sec in estimated), 1),
             "gaps_not_filled": [{"rows": [g.a, g.b], "gap_m": round(g.gap_m, 3), "reason": g.reason} for g in gaps if not g.filled],
         }
         vsummary["removed_hanging"] = len(removed)
@@ -443,6 +470,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "smoothing_vertices_removed": smoothed_vertices,
             "joins": len(grower.joins),
             "growth_rounds": grower.rounds,
+            "head_on_joins": grower.head_on_joins,
             "sections": len(sections),
             "endpoint_states": endpoint_states,
             "validation": vsummary,
@@ -543,6 +571,14 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
             "dangling_ends": sum(r["dangling"] for r in all_reviews),
             "missing_row_estimate": settings.missing_row_estimate.enabled,
             "rows_estimated": sum(r["estimated"] for r in all_reviews),
+            "row_numbering": settings.row_numbering.enabled,
+            "rows_number_uncertain": sum(1 for r in all_reviews if r.get("row_no_ok") == 0),
+            "row_numbers_missing": sum(
+                len((b["validation"].get("row_numbering") or {}).get("missing_row_nos", [])) for b in block_reports
+            ),
+            "pieces_squashed": sum((b["validation"].get("missing_row_estimate") or {}).get("pieces_squashed", 0) for b in block_reports),
+            "length_from_image_m": round(sum(r["length_m"] * r["det_pct"] / 100 for r in all_reviews), 1),
+            "length_estimated_m": round(sum(r["length_m"] * (100 - r["det_pct"]) / 100 for r in all_reviews if r["estimated"]), 1),
             "row_gaps_not_filled": sum(1 for f in all_issues if f.check == "row_gap"),
             "drop_hanging_rows": settings.export.drop_hanging_rows,
             "removed_hanging": len(all_removed),

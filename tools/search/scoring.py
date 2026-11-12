@@ -7,14 +7,21 @@ With kernel K_k, validity mask M and row evidence V, for one hypothesis:
     m_k = num_k / den_k        (normalisation = "renormalise_valid")
     m_k = num_k / tot_k        (normalisation = "full_kernel")
 
-A band is available when coverage_k >= min_valid_coverage. The base score is
+A band is available when coverage_k >= min_valid_coverage. Near a block edge
+some bands fall outside and are unavailable. Their weights are mirrored: the
+weight of an unavailable band k moves to band -k on the other side of the
+centre, if that one is available. Weights are then rescaled to sum to 1, which
+only matters when a band and its mirror are both unavailable:
 
-    S = sum_k w_k * m_k * available_k                       ("zero" policy)
-    S = sum_k w_k * m_k * available_k / sum_k w_k * available_k   ("renormalise")
+    w'_k = (w_k + w_-k * unavailable_-k) * available_k
+    S = sum_k w'_k * m_k / sum_k w'_k
 
-With full support both give the agreed S = 0.50 m_0 + 0.20 (m_-1 + m_+1)
-+ 0.05 (m_-2 + m_+2). S is NaN when the centre band is unavailable. S is an
-overlap/matching score, not a probability.
+With the agreed weights and one side outside, that gives 0.50 centre,
+0.40 inner, 0.10 outer: the centre keeps its share and the remaining side keeps
+the neighbour support that holds a template in its lane. With full support S =
+0.50 m_0 + 0.20 (m_-1 + m_+1) + 0.05 (m_-2 + m_+2), the agreed score. S is NaN
+when the centre band is unavailable. S is an overlap/matching score, not a
+probability.
 """
 
 from __future__ import annotations
@@ -43,18 +50,24 @@ def band_statistics(num, den, tot, normalisation: str, min_valid_coverage: float
     return means, coverage, available
 
 
-def base_score(means, available, weights, centre_position: int, policy: str):
-    """Combine band means (band axis last) into S. NaN where the centre band is unavailable."""
+def mirrored_weights(weights, available):
+    """Effective band weights (band axis last): unavailable weights move to the mirror band.
+
+    The template's bands are symmetric about the centre, so band k's mirror is
+    the band at the reversed position.
+    """
     w = np.asarray(weights, dtype=np.float32)
-    wa = w * available
+    available = np.asarray(available, dtype=bool)
+    lost = w * ~available
+    return (w + lost[..., ::-1]) * available
+
+
+def base_score(means, available, weights, centre_position: int):
+    """Combine band means (band axis last) into S. NaN where the centre band is unavailable."""
+    wa = mirrored_weights(weights, available)
     weighted = (wa * means).sum(axis=-1)
-    if policy == "zero":
-        score = weighted
-    elif policy == "renormalise":
-        total = wa.sum(axis=-1)
-        score = np.divide(weighted, total, out=np.zeros_like(weighted), where=total > 0)
-    else:
-        raise ValueError(f"unknown unavailable-band policy {policy!r}")
+    total = wa.sum(axis=-1)
+    score = np.divide(weighted, total, out=np.zeros_like(weighted), where=total > 0)
     score = np.where(available[..., centre_position], score, np.nan)
     return score.astype(np.float32)
 
@@ -69,7 +82,7 @@ def score_hypothesis(kernels, mv: np.ndarray, m: np.ndarray, row: int, col: int,
     den = np.array([np.dot(k.weight, m[row + k.drow, col + k.dcol]) for k in kernels], dtype=np.float32)
     tot = np.array([k.total for k in kernels], dtype=np.float32)
     means, coverage, available = band_statistics(num, den, tot, scoring.normalisation, scoring.min_valid_coverage)
-    score = base_score(means, available, weights, centre_position, scoring.unavailable_bands)
+    score = base_score(means, available, weights, centre_position)
     return float(score), means, coverage
 
 

@@ -105,6 +105,8 @@ def block_records(blocks, block_reports, sections, reviews) -> list[dict]:
             "review": sum(r["review"] for r in mine),
             "removed": by_block[b.id]["validation"].get("removed_hanging", 0),
             "estimated": sum(r.get("estimated", 0) for r in mine),
+            "max_row_no": (by_block[b.id]["validation"].get("row_numbering") or {}).get("last_row_no"),
+            "missing_no": len((by_block[b.id]["validation"].get("row_numbering") or {}).get("missing_row_nos", [])),
             "row_ends": sum(len(s.boundary_points()) for s in sections if s.block_id == b.id),
             "length_m": round(sum(r["length_m"] for r in mine), 1),
             "theta_deg": by_block[b.id].get("theta_median_deg"),

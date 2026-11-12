@@ -240,6 +240,7 @@ def fill_gaps(
                 seed_ids=[],
                 n_joins=0,
                 flags=["estimated", f"between rows {gap.a} and {gap.b} ({k} of {gap.missing})"],
+                detected_m=0.0,  # nothing from the image until pieces are squashed in (squash.py)
             ))
     return added
 

@@ -17,9 +17,15 @@ of growth_step_m:
    tip and that far beyond the step, facing back within join_angle_deg, is
    joined and the two rows merge.
 5. Conflict: the step crosses another row, or lands on another row's line
-   (closer than link_lateral_frac * d), so the end stops as "conflict".
-6. Boundary: the step leaves the block polygon. It is cut at the boundary and
-   the end stops as "boundary".
+   (closer than link_lateral_frac * d). If that row has a free end facing back
+   less than half a row spacing to the side, it is the same row coming the
+   other way, offset by a little more than the join allows: the two are joined
+   (a head-on join). Otherwise the end stops as "conflict".
+6. Boundary: the step leaves the block polygon. If the straight step leaves it
+   too, the row ends along its own direction: the step goes straight, not
+   turned, because its template hangs over the boundary and cannot steer.
+   The step is cut at the boundary and the end stops as "boundary". There is
+   no angle rule, so a row may end at a long edge at any angle.
 7. Limit: the end has grown max_row_length_m.
 Growth ends when no active endpoints remain, so it always terminates.
 """
@@ -131,6 +137,7 @@ class Grower:
         self.max_turn = int(math.floor(settings.max_turn_deg + 1e-9))
         self.joins: list[JoinRecord] = []
         self.rounds = 0
+        self.head_on_joins = 0  # conflicts that were the same row coming the other way, joined
 
     def run(self) -> list[Row]:
         while True:
@@ -180,12 +187,24 @@ class Grower:
             direction = row.outward_tangent(side, self.bridge_back_m)
         Q = P + s.growth_step_m * direction
 
+        if supported and not self.polygon.intersects(Point(Q)):
+            straight = P + s.growth_step_m * vec[0]  # turns[0] == 0: the row's own direction
+            if not self.polygon.intersects(Point(straight)):
+                # The row ends here. Its last step goes straight: half its template lies outside.
+                direction, Q = vec[0], straight
+
         target = self._join_target(row, side, P, Q, direction)
         if target is not None:
             self._join(row, side, *target, supported)
             return
         segment = LineString([P, Q])
-        if self._conflicts(row, segment, Q):
+        blockers = self._conflicts(row, segment, Q)
+        if blockers:
+            target = self._head_on_end(row, P, direction, blockers)
+            if target is not None:
+                self._join(row, side, *target, supported)
+                self.head_on_joins += 1
+                return
             ep.state = "conflict"
             return
         if not self.polygon.intersects(Point(Q)):
@@ -285,13 +304,44 @@ class Grower:
         other.alive = False
         self.joins.append(JoinRecord(row_id=row.id, merged_row_id=other.id, x=float(joint[0]), y=float(joint[1])))
 
-    def _conflicts(self, row: Row, segment: LineString, Q) -> bool:
+    def _conflicts(self, row: Row, segment: LineString, Q) -> list[Row]:
+        """Rows the step crosses or lands on."""
         overlap = self.s.link_lateral_frac * row.spacing_m
+        blockers = []
         for k in self._line_tree.query(segment.buffer(self.s.growth_step_m + overlap)):
             other = self._line_rows[int(k)]
             if other is row or not other.alive:
                 continue
             line = other.line()
             if line.crosses(segment) or line.distance(Point(Q)) < overlap:
-                return True
-        return False
+                blockers.append(other)
+        return blockers
+
+    def _head_on_end(self, row: Row, P, direction, blockers: list[Row]):
+        """A blocker's free end that is the same row coming the other way, or None.
+
+        The end must face back within join_angle_deg and lie less than half a row
+        spacing to the side (beyond that is the neighbouring row). It may lie up to
+        two steps plus the join reach behind the tip: both ends move in a round, so
+        they can pass each other before either one sees the other.
+        """
+        lateral_max = 0.5 * row.spacing_m
+        behind_max = 2 * self.s.growth_step_m + self.s.join_distance_frac * row.spacing_m
+        ahead_max = self.s.growth_step_m + self.s.join_distance_frac * row.spacing_m
+        normal = np.array([-direction[1], direction[0]])
+        best = None
+        for other in blockers:
+            for other_side in ("start", "end"):
+                if other.endpoint(other_side).state not in FREE_STATES:
+                    continue
+                rel = other.tip(other_side) - P
+                ahead = float(np.dot(rel, direction))
+                if abs(float(np.dot(rel, normal))) >= lateral_max or not -behind_max <= ahead <= ahead_max:
+                    continue
+                facing = -other.outward_tangent(other_side, self.back_m)
+                if math.degrees(math.acos(float(np.clip(np.dot(facing, direction), -1, 1)))) > self.s.join_angle_deg:
+                    continue
+                dist = float(np.hypot(*rel))
+                if best is None or dist < best[0]:
+                    best = (dist, other, other_side)
+        return None if best is None else (best[1], best[2])

@@ -1,0 +1,10 @@
+# Centroid pre-test, kernel cache, missing-row estimate with squash, and row numbering.
+#
+# The same as centroid-pretest-cache-row-estimate.toml, plus a row number per
+# block (row_no in rows.shp). Numbering runs on the final rows: complete
+# detected rows, merged rows and estimates, so missing rows rarely leave gaps.
+extends = "centroid-pretest-cache-row-estimate.toml"
+
+[row_numbering]
+enabled = true
+transect_interval_m = 10.0      # transects across the rows every 10 m, plus one through each row's middle

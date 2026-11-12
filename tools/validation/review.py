@@ -13,9 +13,10 @@ the image supports it and what the checks found, then:
   issues      the reasons, in words, for the attribute table.
 
 Rows added by the missing-row estimate (tools/reconstruction/missing.py) get
-estimated = 1, conf = "estimated" and review = 1: they are drawn from their
-neighbours, not seen in the image. Their ev_* fields still show whether the
-image supports them.
+estimated = 1. A purely interpolated one gets conf = "estimated" and review = 1.
+One with detected pieces squashed into it (squash.py) gets conf = "merged"; it
+is flagged for review when less than MERGED_MIN_DET_PCT of it comes from the
+image, or when the usual checks flag it.
 
 Two rows that run too close both measure the same narrow spacing, but usually
 only one is wrong. Narrow samples therefore count towards a row's review flag
@@ -40,10 +41,12 @@ NOTE_SPACING_FRAC = 0.05
 
 ROW_FIELDS = (
     "id", "block", "row_id", "length_m", "theta_deg", "spacing_m", "sp_med_m", "sp_out_pct",
-    "bridged_m", "bridge_pct", "ev_mean", "ev_sup_pct", "pos_rms_m", "n_seeds", "n_joins",
-    "start_st", "end_st", "dangling", "crossings", "near_row", "estimated", "review", "conf", "issues",
+    "bridged_m", "bridge_pct", "det_pct", "ev_mean", "ev_sup_pct", "pos_rms_m", "n_seeds", "n_joins",
+    "start_st", "end_st", "dangling", "crossings", "near_row", "estimated", "row_no", "row_no_ok",
+    "review", "conf", "issues",
 )
-CONF_CLASSES = ("high", "medium", "low", "estimated")
+CONF_CLASSES = ("high", "medium", "low", "merged", "estimated")
+MERGED_MIN_DET_PCT = 50.0  # a merged row drawn mostly from the estimate is still reviewed
 
 
 def mean_evidence(evidence: np.ndarray) -> float | None:
@@ -150,6 +153,9 @@ def review_section(
         "sp_out_pct": round(100 * sp_out_frac, 1),
         "bridged_m": round(bridged, 2),
         "bridge_pct": round(100 * bridge_frac, 1),
+        # Share of the row drawn from the image: estimated rows count their squashed pieces,
+        # detected rows everything that was not bridged.
+        "det_pct": round(100 * (section.detected_m / length if section.detected_m is not None else 1 - bridge_frac), 1) if length > 0 else 0.0,
         "ev_mean": round(ev_mean, 3) if ev_mean is not None else None,
         "ev_sup_pct": round(100 * support_frac, 1),
         "pos_rms_m": round(pos_rms, 3) if pos_rms is not None else None,
@@ -161,6 +167,8 @@ def review_section(
         "crossings": stats.crossings,
         "near_row": near_row,
         "estimated": 0,
+        "row_no": None,
+        "row_no_ok": None,
         "review": review,
         "conf": conf,
         "issues": "; ".join(reasons + notes)[:254],
@@ -168,10 +176,28 @@ def review_section(
 
 
 def mark_estimated(record: dict, section) -> dict:
-    """Label a review record as an estimated row (in place)."""
+    """Label a review record as an estimated or merged row (in place)."""
     between = next((f for f in section.flags if f.startswith("between rows")), "between neighbouring rows")
     record["estimated"] = 1
-    record["review"] = 1
-    record["conf"] = "estimated"
-    record["issues"] = ("estimated " + between + ("; " + record["issues"] if record["issues"] else ""))[:254]
+    if record.get("det_pct", 0) > 0:
+        record["conf"] = "merged"
+        note = f"estimated {between}, {record['det_pct']:.0f}% from detected pieces"
+        if record["det_pct"] < MERGED_MIN_DET_PCT:
+            record["review"] = 1
+    else:
+        record["conf"] = "estimated"
+        record["review"] = 1
+        note = "estimated " + between
+    record["issues"] = (note + ("; " + record["issues"] if record["issues"] else ""))[:254]
+    return record
+
+
+def mark_numbered(record: dict, row_no: int, ok: bool) -> dict:
+    """Add the row number (in place); a number its neighbours disagree on flags the row."""
+    record["row_no"] = int(row_no)
+    record["row_no_ok"] = int(ok)
+    if not ok:
+        record["review"] = 1
+        note = "row number uncertain (its neighbours disagree on it)"
+        record["issues"] = (record["issues"] + "; " + note if record["issues"] else note)[:254]
     return record

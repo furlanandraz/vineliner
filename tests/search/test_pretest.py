@@ -24,7 +24,7 @@ def setup():
     spacings = (1.30, 1.35, 1.40, 1.45, 1.50, 1.55, 1.60, 1.65, 1.70)
     bank = KernelBank(template, thetas, spacings, SYNTHETIC_PIXEL, SYNTHETIC_PIXEL, "exact")
     space = SearchSpace(thetas, spacings, SYNTHETIC_PIXEL, SYNTHETIC_PIXEL, "nominal_d0", 1.5)
-    scoring = ScoringSettings(0.5, "renormalise_valid", 0.5, "renormalise")
+    scoring = ScoringSettings(0.5, "renormalise_valid", 0.5)
     return grid, V * M, M, LocalSearch(bank, space, scoring, W, 2), space
 
 

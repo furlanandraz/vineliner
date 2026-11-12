@@ -36,6 +36,7 @@ class RowSection:
     n_joins: int
     bridged: object = None  # line geometry of the bridged (unsupported) parts, or None
     flags: list[str] = field(default_factory=list)
+    detected_m: float | None = None  # estimated rows: length taken from detected pieces (squash.py)
 
     @property
     def length_m(self) -> float:
