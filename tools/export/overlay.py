@@ -32,6 +32,26 @@ COLOURS = {
 }
 
 
+def to_display(bands, valid: np.ndarray, percentiles: tuple[float, float] = (2.0, 98.0)) -> np.ndarray:
+    """(3, rows, cols) uint8 from three 2-D bands (repeat one band for gray).
+
+    uint8 bands are used as they are. Any other band is stretched between the
+    percentiles of its valid pixels. Invalid pixels are black.
+    """
+    out = np.zeros((3, *valid.shape), dtype=np.uint8)
+    for i, band in enumerate(bands):
+        if band.dtype == np.uint8:
+            out[i] = band
+            continue
+        values = band[valid]
+        if values.size == 0:
+            continue
+        lo, hi = (float(v) for v in np.percentile(values, percentiles))
+        scaled = np.clip((band.astype(np.float32) - lo) / max(hi - lo, 1e-12), 0.0, 1.0) * 255.0
+        out[i] = np.where(valid, np.nan_to_num(scaled), 0).astype(np.uint8)
+    return out
+
+
 def draw_lines(image: np.ndarray, grid: Grid, geometries, colour, step_px: float = 0.5) -> None:
     """Burn line geometries into image by sampling every step_px pixels."""
     px = min(grid.pixel_size)
@@ -60,7 +80,7 @@ def _paint(image, grid: Grid, x, y, colour, size: int) -> None:
 
 
 def write_overlay(path: str | Path, rgb: np.ndarray, grid: Grid, blocks, sections, reviews, issues, removed=()) -> Path:
-    """rgb: (3, rows, cols) uint8. removed: hanging rows dropped by [export] drop_hanging_rows (grey)."""
+    """rgb: (3, rows, cols) uint8 background (to_display). removed: hanging rows dropped by [export] drop_hanging_rows (grey)."""
     image = np.ascontiguousarray(np.moveaxis(rgb, 0, -1)).copy()
     draw_lines(image, grid, [b.polygon.boundary for b in blocks], COLOURS["block"])
     draw_lines(image, grid, [s.geometry for s in removed], COLOURS["removed"])

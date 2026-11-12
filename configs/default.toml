@@ -13,13 +13,22 @@
 # Relative paths are relative to the project root.
 
 [input]                         # §3, §14: set per area
+# Three input layers, each optional; at least one must be in use. A layer is in
+# use when its path is set and its use_* switch is on. Switch a layer off to run
+# without it and keep its path. All layers in use must share one projected,
+# north-up grid; src/prepare_inputs.py puts them on one (PROJECT.md §3).
 # rgb =                         # path to the RGB GeoTIFF
-# rgb_bands =                   # band meaning in file order, e.g. ["red", "green", "blue"]
-# nir =                         # optional path to a false-colour NIR GeoTIFF on the same grid
-# nir_bands =                   # band meaning in file order, e.g. ["nir", "red", "green"]
-# ndvi =                        # optional single-band NDVI GeoTIFF on the same grid (its own NoData applies)
-# nodata_value =                # value treated as NoData or outlier; unset = the file's NoData
-nodata_rule = "any_band"        # mask a pixel when ANY band of ANY input file equals nodata_value
+# rgb_bands =                   # needed for rgb: band meaning in file order, e.g. ["red", "green", "blue"]
+use_rgb = true
+# nir =                         # path to a NIR GeoTIFF: one NIR band, or a false-colour file
+# nir_bands =                   # needed for nir: e.g. ["nir"] or ["nir", "red", "green"]
+use_nir = true
+# ndvi =                        # path to a single-band NDVI GeoTIFF (its own NoData applies).
+                                # Any vegetation index in [-1, 1] with green = high works, e.g. GNDVI
+use_ndvi = true
+# nodata_value =                # value treated as NoData or outlier in the RGB and NIR files;
+                                # unset = each file's own NoData. NaN always counts as NoData
+nodata_rule = "any_band"        # mask a pixel when ANY band of an RGB/NIR file equals nodata_value
                                 # ("all_bands": only when every band of one file does)
 
 [vineyards]                     # §4: block polygons; automatic classification is OPEN
@@ -29,15 +38,24 @@ nodata_rule = "any_band"        # mask a pixel when ANY band of ANY input file e
 # blocks =                      # optional subset of block ids to process
 
 [evidence]                      # §5: row-evidence raster V in [0, 1], high = row
-# method =                      # OPEN: "gray_stretch" | "black_tophat"
+# V is a weighted mean of one component per input layer in use. The weights are
+# relative: those of the layers in use are rescaled to sum to 1, so switching a
+# layer off needs no other change. A layer in use with weight 0 is still read
+# (its NoData still masks pixels) but adds nothing to V. Only components with
+# weight > 0 need their method. The default is the RGB-only baseline (§2).
+rgb_weight = 1.0                # RGB component: gray from `bands`, rows darker than the ground
+# method =                      # OPEN for the RGB component: "gray_stretch" | "black_tophat"
 bands = ["red", "green", "blue"]  # averaged to gray; names from rgb_bands / nir_bands
 # tophat_size_m =               # OPEN for black_tophat: closing window side
+nir_weight = 0.0                # NIR component: the "nir" band, canopy brighter than the ground
+# nir_method =                  # needed when nir_weight > 0: "white_tophat" | "stretch"
+# nir_tophat_size_m =           # needed for white_tophat: opening window side
+ndvi_weight = 0.0               # NDVI component: canopy greener than the ground
+# ndvi_method =                 # needed when ndvi_weight > 0: "white_tophat" | "stretch"
+# ndvi_tophat_size_m =          # needed for white_tophat
 scale_percentile = 99.0         # top-hats: this percentile of the response maps to V = 1
 stretch_percentiles = [2.0, 98.0]  # stretches: lo/hi percentiles
 # scale_region =                # OPEN: "per_block" (each block scaled on its own) | "all_blocks"
-ndvi_weight = 0.0               # share of an NDVI component in V; 0 = RGB-only (PROJECT.md §2, §5)
-# ndvi_method =                 # needed when ndvi_weight > 0: "white_tophat" | "stretch"
-# ndvi_tophat_size_m =          # needed for white_tophat
 
 [template]                      # §6
 indices = [-2, -1, 0, 1, 2]     # outer left ... outer right
@@ -185,3 +203,4 @@ drop_hanging_rows = false       # true: keep only rows that meet their block bou
                                 # points, their two ends. Dangling rows and rows touching the boundary
                                 # elsewhere are removed before the checks and written to removed.shp
                                 # instead, for adding missing rows by hand. false: keep every row.
+runs_dir = "runs"               # run outputs go to <runs_dir>/<timestamp>[-name]/; relative to the project root

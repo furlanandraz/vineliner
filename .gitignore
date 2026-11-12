@@ -11,6 +11,8 @@
 *.aux.xml
 *.tfw
 *.ovr
+# Provenance written by src/prepare_inputs.py next to the prepared imagery (local source paths).
+dof/*/prepare.json
 
 # GeoPackage lock/journal files created while a layer is open in QGIS.
 *.gpkg-wal

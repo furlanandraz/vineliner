@@ -39,7 +39,8 @@ scale_region = "per_block"      # PICK: scaling over all blocks let the high-con
                                 # Per block, a block's result no longer depends on the other blocks.
 ndvi_weight = 0.0               # PICK: tested 2026-11-07 (PROJECT.md §18). At 0.3, both NDVI methods
                                 # gave shorter, more broken rows than RGB alone: the NDVI is softer than
-                                # the RGB at 0.2 m. To try it: ndvi_weight = 0.3, ndvi_method = "stretch".
+                                # the RGB at 0.2 m. Weights are relative (2026-11-12), so to repeat that
+                                # test: rgb_weight = 0.7, ndvi_weight = 0.3, ndvi_method = "stretch".
 ndvi_method = "stretch"         # used only when ndvi_weight > 0
 
 [kernels]

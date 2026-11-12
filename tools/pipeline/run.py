@@ -27,12 +27,13 @@ from ..export import (
     issue_layer,
     open_choices,
     seed_geometry,
+    to_display,
     write_outputs,
     write_overlay,
     write_report,
 )
 from ..geo import Grid
-from ..imagery import combine, gray_from_bands, gray_response, ndvi_response, scale_response, valid_mask
+from ..imagery import bright_response, combine, gray_from_bands, gray_response, scale_response, valid_mask
 from ..io import read_polygons, read_raster, write_raster
 from ..reconstruction import (
     Grower,
@@ -94,14 +95,22 @@ class RunResult:
 @dataclass
 class _Inputs:
     settings: RunSettings
-    rasters: list
+    layers: dict  # layer name -> Raster, for the layers in use, in INPUT_LAYERS order
     grid: Grid
     pixel_m: float
     valid: np.ndarray
     blocks: list
     masks: dict
     polygon_provenance: dict
-    ndvi: object = None  # Raster or None
+
+    @property
+    def rasters(self) -> list:
+        """The band rasters (RGB, then NIR) that the RGB component's bands are looked up in."""
+        return [self.layers[k] for k in ("rgb", "nir") if k in self.layers]
+
+    @property
+    def ndvi(self):
+        return self.layers.get("ndvi")
 
 
 def make_run_dir(root: Path | None = None, name: str | None = None) -> Path:
@@ -112,29 +121,30 @@ def make_run_dir(root: Path | None = None, name: str | None = None) -> Path:
 
 
 def load_inputs(settings: RunSettings) -> _Inputs:
+    """Read the layers in use. All must share one grid, set by the first (RGB, else NIR, else NDVI)."""
     s = settings.input
-    rgb = read_raster(s.rgb, s.rgb_bands)
-    rasters = [rgb]
-    if s.nir is not None:
-        nir = read_raster(s.nir, s.nir_bands)
-        if not nir.grid.same_grid(rgb.grid):
-            raise ValueError("RGB and NIR rasters are on different grids; align them explicitly first (PROJECT.md §3)")
-        if nir.grid.crs_wkt != rgb.grid.crs_wkt:
-            raise ValueError("RGB and NIR rasters have different CRS definitions")
-        rasters.append(nir)
-    grid = rgb.grid
+    band_names = {"rgb": s.rgb_bands, "nir": s.nir_bands, "ndvi": ("ndvi",)}
+    layers = {name: read_raster(getattr(s, name), band_names[name]) for name in s.layers}
+    first = s.layers[0]
+    grid = layers[first].grid
+    for name, raster in layers.items():
+        if not raster.grid.same_grid(grid) or raster.grid.crs_wkt != grid.crs_wkt:
+            raise ValueError(
+                f"the {name} raster is not on the {first} grid; put the layers on one grid first "
+                "(src/prepare_inputs.py, PROJECT.md §3)"
+            )
     grid.require_north_up()
     pixel_m = grid.require_square_pixels()
-    nodata = s.nodata_value if s.nodata_value is not None else rgb.nodata
-    valid = valid_mask([r.data for r in rasters], nodata, s.nodata_rule)
-    ndvi = None
-    if s.ndvi is not None:
-        ndvi = read_raster(s.ndvi, ("ndvi",))
-        if not ndvi.grid.same_grid(rgb.grid) or ndvi.grid.crs_wkt != rgb.grid.crs_wkt:
-            raise ValueError("the NDVI raster is not on the RGB grid; align it explicitly first (PROJECT.md §3)")
+    valid = np.ones(grid.shape, dtype=bool)
+    for name in ("rgb", "nir"):
+        if name in layers:  # the configured value, else the file's own NoData
+            nodata = s.nodata_value if s.nodata_value is not None else layers[name].nodata
+            valid &= valid_mask([layers[name].data], nodata, s.nodata_rule)
+    if "ndvi" in layers:
+        ndvi = layers["ndvi"]
         band = ndvi.data[0]
         ok = np.isfinite(band) & (band >= -1.0) & (band <= 1.0)  # NDVI is in [-1, 1]
-        if ndvi.nodata is not None:
+        if ndvi.nodata is not None and not np.isnan(ndvi.nodata):
             ok &= band != ndvi.nodata
         valid &= ok
 
@@ -148,32 +158,36 @@ def load_inputs(settings: RunSettings) -> _Inputs:
         blocks = [b for b in blocks if b.id in set(v.blocks)]
     provenance["note"] = "supplied polygons used as a test fixture, not automatic classification (PROJECT.md §4)"
     masks = {b.id: block_mask(b, grid) for b in blocks}
-    return _Inputs(settings, rasters, grid, pixel_m, valid, blocks, masks, provenance, ndvi)
+    return _Inputs(settings, layers, grid, pixel_m, valid, blocks, masks, provenance)
 
 
 class _Evidence:
-    """Row-evidence responses computed once, scaled per block or over all blocks."""
+    """Row-evidence responses computed once per layer in use, scaled per block or over all blocks."""
 
     def __init__(self, settings: RunSettings, inputs: _Inputs):
         ev = settings.evidence
         self.ev = ev
         self.valid = inputs.valid
-        gray = gray_from_bands([_band(inputs.rasters, name) for name in ev.bands])
-        self.gray = gray_response(gray, inputs.valid, ev.method, inputs.pixel_m, ev.tophat_size_m)
-        self.ndvi = None
-        if ev.ndvi_weight > 0:
-            self.ndvi = ndvi_response(inputs.ndvi.data[0], inputs.valid, ev.ndvi_method, inputs.pixel_m, ev.ndvi_tophat_size_m)
+        self.weights = dict(ev.weights)  # layer -> share of V, summing to 1
+        self.responses = {}
+        for layer in self.weights:
+            if layer == "rgb":
+                gray = gray_from_bands([_band(inputs.rasters, name) for name in ev.bands])
+                self.responses[layer] = gray_response(gray, inputs.valid, ev.method, inputs.pixel_m, ev.tophat_size_m)
+            elif layer == "nir":
+                nir = inputs.layers["nir"].band("nir")
+                self.responses[layer] = bright_response(nir, inputs.valid, ev.nir_method, inputs.pixel_m, ev.nir_tophat_size_m, "nir")
+            else:
+                ndvi = inputs.ndvi.data[0]
+                self.responses[layer] = bright_response(ndvi, inputs.valid, ev.ndvi_method, inputs.pixel_m, ev.ndvi_tophat_size_m, "ndvi")
 
     def for_region(self, region: np.ndarray) -> tuple[np.ndarray, dict]:
         ev = self.ev
         stats_px = region & self.valid
-        v_gray, s_gray = scale_response(self.gray, stats_px, ev.scale_percentile, ev.stretch_percentiles)
-        components = [(v_gray, 1.0 - ev.ndvi_weight)]
-        info = {"gray": s_gray}
-        if self.ndvi is not None:
-            v_ndvi, s_ndvi = scale_response(self.ndvi, stats_px, ev.scale_percentile, ev.stretch_percentiles)
-            components.append((v_ndvi, ev.ndvi_weight))
-            info["ndvi"] = s_ndvi
+        components, info = [], {}
+        for layer, resp in self.responses.items():
+            v, info[layer] = scale_response(resp, stats_px, ev.scale_percentile, ev.stretch_percentiles)
+            components.append((v, self.weights[layer]))
         V = combine(components, self.valid)
         info["mean_in_region"] = float(V[stats_px].mean())
         return V, info
@@ -182,13 +196,13 @@ class _Evidence:
         ev = self.ev
         out = {
             "polarity": "high = row",
-            "gray": self.gray.info | {"bands": list(ev.bands), "weight": 1.0 - ev.ndvi_weight},
+            "weights": dict(self.weights),
             "scale_region": ev.scale_region,
             "scale_percentile": ev.scale_percentile,
             "stretch_percentiles": list(ev.stretch_percentiles),
         }
-        if self.ndvi is not None:
-            out["ndvi"] = self.ndvi.info | {"weight": ev.ndvi_weight}
+        for layer, resp in self.responses.items():
+            out[layer] = resp.info | {"weight": self.weights[layer]} | ({"bands": list(ev.bands)} if layer == "rgb" else {})
         return out
 
 
@@ -235,7 +249,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
 
     t0 = time.perf_counter()
     settings = RunSettings.from_config(config)
-    run_dir = run_dir or make_run_dir(name=name)
+    run_dir = run_dir or make_run_dir(settings.export.runs_dir, name=name)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.json").write_text(json.dumps(config, indent=2))
     log(f"Run directory: {run_dir}")
@@ -244,7 +258,10 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
 
     inputs = load_inputs(settings)
     grid, valid, blocks = inputs.grid, inputs.valid, inputs.blocks
-    log(f"Inputs: {grid.width} x {grid.height} px at {inputs.pixel_m} m; {len(blocks)} blocks; {int((~valid).sum())} invalid pixels")
+    off = f" ({', '.join(settings.input.switched_off)} switched off)" if settings.input.switched_off else ""
+    log(f"Inputs: {', '.join(inputs.layers)}{off}; {grid.width} x {grid.height} px at {inputs.pixel_m} m; "
+        f"{len(blocks)} blocks; {int((~valid).sum())} invalid pixels")
+    log("Evidence: " + ", ".join(f"{layer} {w:.2f}" for layer, w in settings.evidence.weights.items()))
     t0 = lap("inputs", t0)
 
     region = np.zeros(grid.shape, dtype=bool)
@@ -538,7 +555,7 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
     )
     written = write_outputs(run_dir, grid.crs_wkt, gpkg_layers, shapefiles, settings.export.shapefile, settings.export.geopackage)
     if settings.export.overlay:
-        write_overlay(run_dir / "overlay.png", inputs.rasters[0].data, grid, blocks, all_sections, all_reviews, all_issues, removed=all_removed)
+        write_overlay(run_dir / "overlay.png", _overlay_background(inputs), grid, blocks, all_sections, all_reviews, all_issues, removed=all_removed)
     t0 = lap("export", t0)
     timings["total"] = round(time.perf_counter() - t_run, 3)
 
@@ -549,7 +566,9 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         "open_choices_set_by_this_run": open_choices(read_toml(DEFAULT_CONFIG), config),
         "settings_notes": list(settings.notes),
         "inputs": {
-            "rasters": [r.metadata | {"band_names": list(r.band_names)} for r in inputs.rasters + ([inputs.ndvi] if inputs.ndvi else [])],
+            "layers_in_use": list(inputs.layers),
+            "layers_switched_off": list(settings.input.switched_off),
+            "rasters": [r.metadata | {"layer": name, "band_names": list(r.band_names)} for name, r in inputs.layers.items()],
             "invalid_pixels": int((~valid).sum()),
             "polygons": inputs.polygon_provenance,
         },
@@ -606,6 +625,17 @@ def run_pipeline(config: dict, run_dir: Path | None = None, name: str | None = N
         f"({t['conf']['high']} high, {t['conf']['medium']} medium, {t['conf']['low']} low confidence; {t['rows_for_review']} for review)"
     )
     return RunResult(run_dir=run_dir, report=report, sections=all_sections, issues=all_issues, reviews=all_reviews)
+
+
+def _overlay_background(inputs: _Inputs) -> np.ndarray:
+    """(3, rows, cols) uint8 imagery under the overlay: RGB when in use, else NIR or NDVI in gray."""
+    rgb = inputs.layers.get("rgb")
+    if rgb is not None and {"red", "green", "blue"} <= set(rgb.band_names):
+        bands = [rgb.band(c) for c in ("red", "green", "blue")]
+    else:
+        raster = inputs.layers.get("nir", inputs.ndvi) or rgb
+        bands = [raster.band("nir") if "nir" in raster.band_names else raster.data[0]] * 3
+    return to_display(bands, inputs.valid)
 
 
 def _band(rasters, name: str) -> np.ndarray:
