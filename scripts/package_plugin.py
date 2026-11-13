@@ -3,7 +3,9 @@
     python scripts/package_plugin.py
 
 The zip holds one folder, vineliner/, as QGIS expects ("Plugins > Manage and
-Install Plugins > Install from ZIP"). Caches and compiled files are left out.
+Install Plugins > Install from ZIP"), with the repository's LICENSE in it (the
+QGIS plugin repository requires one in the zip). Caches and compiled files are
+left out.
 The version in vineliner/metadata.txt, vineliner/core/__init__.py and
 pyproject.toml must agree, or nothing is built.
 """
@@ -18,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "vineliner"
+LICENSE = ROOT / "LICENSE"
 SKIP_DIRS = {"__pycache__", ".pytest_cache"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
 
@@ -47,6 +50,7 @@ def build(out_dir: Path = ROOT / "dist") -> Path:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in plugin_files():
             zf.write(f, Path("vineliner") / f.relative_to(PLUGIN))
+        zf.write(LICENSE, Path("vineliner") / "LICENSE")
     return path
 
 
