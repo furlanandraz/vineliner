@@ -30,10 +30,11 @@ python -m pytest
 python src/run_pipeline.py configs/centroid-pretest-cache.toml               # all blocks
 python src/run_pipeline.py configs/centroid-pretest-cache.toml --blocks 0 3  # some blocks
 python src/run_pipeline.py configs/full-search.toml --plan                   # counts only, no search
+python src/run_pipeline.py configs/multispectral.toml --layers ndvi --name ndvi  # only some input layers
 python src/describe_inputs.py dof/bordeaux/rgb.tif poly/poly.gpkg
 ```
 
-A full Bordeaux run (7 blocks, about 7,900 search centres) takes about 7 minutes. Outputs go to `runs/<timestamp>[-name]/`.
+A full Bordeaux run (7 blocks, about 7,900 search centres) takes about 7 minutes; Cremons (1 block, 833 centres) about 20 s. Outputs go to `<runs_dir>/<timestamp>[-name]/`. `runs_dir` is set in `[export]`: `runs/` by default, `runs/cremons/` in `configs/multispectral.toml`.
 
 **For review in QGIS** (`shapefiles/`, all in the raster's CRS):
 
@@ -104,11 +105,12 @@ A row gets `review = 1` when:
 ```
 src/                     entry files
   run_pipeline.py        run the pipeline for a config
+  prepare_inputs.py      reproject layers onto one projected analysis grid
   describe_inputs.py     print raster/polygon metadata
 tools/
   config/                load, merge and validate configs (loader, spacing, settings)
   geo/                   pixel grid <-> world coordinates, angle convention
-  io/                    file adapters: rasterio rasters, GeoPandas vectors
+  io/                    file adapters: rasterio rasters, GeoPandas vectors, reprojection (warp)
   imagery/               valid mask (255 rule), row-evidence raster
   vineyards/             block polygons and masks; classification slot (not implemented)
   template/              five-line template geometry, rasterised kernels
@@ -135,8 +137,52 @@ Run defaults are in [configs/default.toml](configs/default.toml). Run settings g
 | [configs/full-search.toml](configs/full-search.toml) | The same, without the pre-test: the full grid search baseline, for comparison |
 | [configs/centroid-pretest-cache-row-estimate.toml](configs/centroid-pretest-cache-row-estimate.toml) | Pre-test and cache, plus the missing-row estimate (with squash), with hanging rows deleted |
 | [configs/centroid-pretest-cache-row-estimate-numbering.toml](configs/centroid-pretest-cache-row-estimate-numbering.toml) | The same, plus row numbering |
+| [configs/multispectral.toml](configs/multispectral.toml) | The same method on RGB, NIR and NDVI layers together, for the Cremons drone data. Outputs to `runs/cremons/` |
 
 The test data's inputs live in `centroid-pretest.toml`. The file names don't refer to the git-ignored imagery, so a fresh clone isn't confused by them.
+
+### Input layers: RGB, NIR, NDVI
+
+```toml
+[input]
+rgb = "dof/cremons/rgb.tif"     # each layer is optional; at least one must be in use
+rgb_bands = ["red", "green", "blue"]
+use_rgb = true                  # the switch: false runs without the layer and keeps its path
+nir = "dof/cremons/nir.tif"
+nir_bands = ["nir"]             # one NIR band, or a false-colour file such as ["nir", "red", "green"]
+use_nir = true
+ndvi = "dof/cremons/ndvi.tif"   # any index in [-1, 1] with green = high works here, e.g. GNDVI
+use_ndvi = true
+
+[evidence]
+rgb_weight = 1.0                # relative weights, rescaled over the layers in use
+nir_weight = 1.0
+ndvi_weight = 1.0
+```
+
+- **Switches.** A layer is in use when its path is set and its `use_*` switch is on (the default). `--layers ndvi nir` on the command line does the same for one run: only the named layers stay on.
+- **Evidence.** Each layer in use with weight > 0 adds one component to the row evidence V, and the weights of those layers are rescaled to sum to 1. So switching a layer off needs no other change. The run log, `settings_notes` and `report.json` (`evidence.weights`) show the shares used.
+  - **RGB:** gray from `bands`, rows darker than the ground (`method`: `black_tophat` or `gray_stretch`).
+  - **NIR** and **NDVI:** rows brighter than the ground (`nir_method` / `ndvi_method`: `white_tophat` or `stretch`).
+  - Only a component that is used needs its method. The defaults (`rgb_weight = 1`, the others 0) are the RGB-only baseline, so the Bordeaux configs behave exactly as before.
+- **NoData.** NaN always counts as NoData. `nodata_value` applies to the RGB and NIR files; unset, each file's own declared NoData applies. The NDVI file's own NoData and values outside [−1, 1] are masked.
+- **One grid.** Every layer in use must share one projected, north-up grid; the first layer in use (RGB, else NIR, else NDVI) sets it. The overlay is drawn on the RGB, or on the NIR or NDVI in gray when there is no RGB.
+
+### Preparing drone or other unaligned layers
+
+`src/prepare_inputs.py` reprojects layers onto one grid in a projected CRS, with an explicit pixel size and resampling, and records where each came from:
+
+```bash
+python src/prepare_inputs.py dof/cremons --crs EPSG:6708 --pixel 0.20 \
+    --layer rgb  <flight>/map/result.tif 1 2 3 \
+    --layer nir  <flight>/map/result_NIR.tif \
+    --layer ndvi <flight>/map/index_map/NDVI.tif
+```
+
+- Each `--layer` is `NAME PATH [BAND ...]` and becomes `OUT_DIR/NAME.tif`. The grid covers every source and has its corners on whole pixels.
+- Resampling is `average` by default, the area mean, which is right when making pixels coarser. The source's NoData is left out of the average; float outputs use NaN as NoData.
+- The source path, its CRS and pixel size, the resampling and PROJ's datum transformation go into each file's GeoTIFF tags, so every `report.json` repeats them, and into `OUT_DIR/prepare.json`.
+- The pixel size sets the search cost: the translation box is (row spacing / pixel)² per hypothesis. At 0.20 m and 2.6 m rows that is 169, against 49 for Bordeaux.
 
 Settings that PROJECT.md leaves open are unset in the defaults. A run refuses to start until every one of them is set, and it lists all the missing ones at once. In `centroid-pretest.toml`, each value chosen for an open setting is marked `PICK`, with the reason next to it. These are first-run choices to compare, not validated values. Each run's `report.json` lists them under `open_choices_set_by_this_run`.
 
@@ -250,6 +296,17 @@ Each extra spacing option adds a full search per location: 180 rotations times e
 Put orthophotos in `dof/<area>/`. GeoTIFFs are git-ignored, so imagery stays local. See PROJECT.md §14 for the test pair in `dof/bordeaux/`.
 
 [poly/poly.gpkg](poly/poly.gpkg) holds 7 hand-drawn vineyard blocks for the Bordeaux scene. They stand in for automatic classification, which isn't implemented yet. Reports label them as a supplied fixture.
+
+[poly/cremons.gpkg](poly/cremons.gpkg) holds the Cremons block (id 1), in EPSG:6708. See "Cremons drone data" below.
+
+### Cremons drone data (`dof/cremons/`)
+
+A DJI Terra multispectral flight of 2025-08-22 over one vineyard block near Cormons (FVG, Italy), about 84 m × 111 m. Details and checks are in PROJECT.md §14.
+
+- **Source.** `Cormons_20250822_MS/map/`: `result.tif` (RGB + alpha, 0.7 cm), `result_NIR.tif`, `result_Red.tif`, `result_Green.tif`, `result_RedEdge.tif` (float reflectance, 1.2 cm) and `index_map/NDVI.tif`, `GNDVI.tif` and others on the same 1.2 cm grid. All are georeferenced in WGS 84 (EPSG:4326) through their GeoTIFF tags, `.prj` and `.tfw`. Their centre is the one in `config.json`. Only the colour maps in `index_map_color/*_local.tif` have no CRS: they are colour renderings in a local metric frame, not measurements, so they are not used.
+- **Prepared** with `src/prepare_inputs.py` (command in `configs/multispectral.toml`) onto one 0.20 m grid in RDN2008 / UTM zone 33N (EPSG:6708), the system of the FVG regional data. PROJ transforms WGS 84 to RDN2008 with the null transformation "RDN2008 to WGS 84 (1)", accuracy 1 m. `gndvi.tif` is prepared too, for runs that put it in the `ndvi` slot.
+- **Block.** The user's polygon was drawn on the June flight's `NDVI_local.tif` and saved with an EPSG:4326 label over local metres. It was moved through that image's pixels and the June DJI georeferencing, then by the measured shift of the August mosaic against the June one (−0.97 m east, −1.09 m north). The August mosaic matches the user's GCP-corrected June mosaic (`*_modified.tif`) within 0.06 m.
+- **Assumptions.** NDVI is (NIR − red) / (NIR + red) from these bands (checked: r = 0.999). The August flight records no GCPs, so its absolute position rests on the drone's GNSS; it agrees with the GCP-corrected June mosaic.
 
 ### Assumptions for the Bordeaux test pair
 

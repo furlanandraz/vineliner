@@ -85,8 +85,31 @@ def run_numbering(tmp_path_factory):
 
 ERASED_ROW = -28  # row index i of the line (p - origin) . n = i * spacing; the block holds rows -46 .. -9
 
+# Single-layer runs on the multispectral synthetic scene (no faint patch). Switching RGB
+# off needs nothing else: the remaining weights are rescaled over the layers in use.
+NDVI_ONLY = {"input": {"use_rgb": False, "use_nir": False}, "evidence": {"ndvi_weight": 1.0, "ndvi_method": "stretch"}}
+NIR_ONLY = {
+    "input": {"use_rgb": False, "use_ndvi": False},
+    "evidence": {"nir_weight": 1.0, "nir_method": "white_tophat", "nir_tophat_size_m": 1.2},
+}
+NAN_CORNER_PX = 20  # NIR and NDVI are NaN (their NoData) in this top-left corner, outside the block
 
-def _run(tmp, overrides, patch=True, erase_row=None):
+
+@pytest.fixture(scope="module")
+def run_ndvi_only(tmp_path_factory):
+    return _run(tmp_path_factory.mktemp("synthetic_ndvi_only"), NDVI_ONLY, patch=False, multispectral=True)
+
+
+@pytest.fixture(scope="module")
+def run_nir_only(tmp_path_factory):
+    """NIR alone, with outputs under a configured runs_dir instead of an explicit run directory."""
+    tmp = tmp_path_factory.mktemp("synthetic_nir_only")
+    return _run(tmp, merge(NIR_ONLY, {"export": {"runs_dir": str(tmp / "runs" / "area")}}), patch=False,
+                multispectral=True, run_dir=None)
+
+
+def _run(tmp, overrides, patch=True, erase_row=None, multispectral=False, run_dir="run"):
+    """multispectral: also write float NIR and NDVI layers (rows bright) on the same grid."""
     from pyproj import CRS
 
     crs = CRS.from_epsg(3794)
@@ -100,19 +123,31 @@ def _run(tmp, overrides, patch=True, erase_row=None):
     gray = 200 - 110 * V + rng.normal(0, 8, V.shape)  # dark rows on bright soil, with noise
     rgb = np.clip(np.stack([gray, gray, gray]), 0, 254).astype(np.uint8)
     tif = tmp / "rgb.tif"
-    with rasterio.open(tif, "w", driver="GTiff", width=grid.width, height=grid.height, count=3, dtype="uint8",
-                       crs=crs, transform=rasterio.Affine(*grid.affine), nodata=255) as dst:
-        dst.write(rgb)
+    _write_tif(tif, rgb, grid, crs, nodata=255)
     x0, y0 = grid.c, grid.f
     block = Polygon([(x0 + 8, y0 - 10), (x0 + 50, y0 - 6), (x0 + 54, y0 - 50), (x0 + 10, y0 - 52)])
     gpkg = tmp / "blocks.gpkg"
     gpd.GeoDataFrame({"id": [7]}, geometry=[block], crs=crs).to_file(gpkg)
     cfg = merge(load_config(), CONFIG)
     cfg = merge(cfg, {"input": {"rgb": str(tif)}, "vineyards": {"source": str(gpkg), "id_field": "id"}})
+    if multispectral:
+        nir = (1000 + 1200 * V + rng.normal(0, 60, V.shape)).astype(np.float32)  # reflectance-like, canopy bright
+        ndvi = np.clip(0.3 + 0.5 * V + rng.normal(0, 0.04, V.shape), -1, 1).astype(np.float32)
+        nir[:NAN_CORNER_PX, :NAN_CORNER_PX] = np.nan
+        ndvi[:NAN_CORNER_PX, :NAN_CORNER_PX] = np.nan
+        _write_tif(tmp / "nir.tif", nir[np.newaxis], grid, crs, nodata=float("nan"))
+        _write_tif(tmp / "ndvi.tif", ndvi[np.newaxis], grid, crs, nodata=float("nan"))
+        cfg = merge(cfg, {"input": {"nir": str(tmp / "nir.tif"), "nir_bands": ["nir"], "ndvi": str(tmp / "ndvi.tif")}})
     cfg = merge(cfg, {"kernels": {"cache": True, "cache_dir": str(tmp / "kernel_cache")}})  # test kernels stay out of the project
     cfg = merge(cfg, overrides)
-    result = run_pipeline(cfg, run_dir=tmp / "run", log=lambda *_: None)
+    result = run_pipeline(cfg, run_dir=tmp / run_dir if run_dir else None, log=lambda *_: None)
     return result, block
+
+
+def _write_tif(path, data, grid, crs, nodata):
+    with rasterio.open(path, "w", driver="GTiff", width=grid.width, height=grid.height, count=data.shape[0],
+                       dtype=data.dtype.name, crs=crs, transform=rasterio.Affine(*grid.affine), nodata=nodata) as dst:
+        dst.write(data)
 
 
 def test_outputs_exist(run):
@@ -123,7 +158,34 @@ def test_outputs_exist(run):
 
 
 def test_every_true_row_is_found_once(run):
-    result, block = run
+    _assert_every_true_row_found_once(*run)
+
+
+def test_single_layer_runs_find_every_true_row(run_ndvi_only, run_nir_only):
+    _assert_every_true_row_found_once(*run_ndvi_only)
+    _assert_every_true_row_found_once(*run_nir_only)
+
+
+def test_switched_off_layers_are_left_out_and_reported(run_ndvi_only):
+    result, _ = run_ndvi_only
+    inputs = result.report["inputs"]
+    assert inputs["layers_in_use"] == ["ndvi"] and inputs["layers_switched_off"] == ["rgb", "nir"]
+    assert [r["layer"] for r in inputs["rasters"]] == ["ndvi"]  # switched-off layers are not even read
+    assert inputs["invalid_pixels"] == NAN_CORNER_PX**2  # NaN is the NDVI's NoData
+    evidence = result.report["evidence"]
+    assert evidence["weights"] == {"ndvi": 1.0} and "rgb" not in evidence
+    assert any("switched off: rgb" in note for note in result.report["settings_notes"])
+    assert (result.run_dir / "overlay.png").exists()  # drawn on the NDVI, as there is no RGB
+
+
+def test_nir_layer_alone_uses_its_band_and_the_configured_runs_dir(run_nir_only):
+    result, _ = run_nir_only
+    assert result.run_dir.parent.name == "area" and result.run_dir.parent.parent.name == "runs"
+    assert result.report["evidence"]["nir"]["method"] == "white_tophat"
+    assert result.report["inputs"]["layers_in_use"] == ["nir"]
+
+
+def _assert_every_true_row_found_once(result, block):
     truth = _true_rows(block)
     used = set()
     for line in truth:

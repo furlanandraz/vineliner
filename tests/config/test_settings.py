@@ -35,9 +35,71 @@ def test_defaults_alone_are_refused_and_every_open_key_is_listed():
     with pytest.raises(ConfigError) as exc:
         RunSettings.from_config(load_config())
     message = str(exc.value)
-    for key in ("[input] rgb", "[vineyards] source", "[evidence] method", "[template] line_length_m",
+    for key in ("[input] rgb, nir or ndvi", "[vineyards] source", "[template] line_length_m",
                 "[translation] box", "[centres] spacing_m", "[scoring] normalisation", "[storage] surfaces"):
         assert key in message
+
+
+def test_rgb_component_needs_its_method():
+    cfg = load_config(PRETEST)
+    del cfg["evidence"]["method"]
+    with pytest.raises(ConfigError, match=r"\[evidence\] method"):
+        RunSettings.from_config(cfg)
+
+
+def test_layers_can_be_switched_off_without_other_changes():
+    cfg = merge(load_config(PRETEST), {"evidence": {"ndvi_weight": 1.0}})  # ndvi_method is already set
+    s = RunSettings.from_config(cfg)
+    assert s.input.layers == ("rgb", "nir", "ndvi") and s.evidence.weights == {"rgb": 0.5, "ndvi": 0.5}
+    off = RunSettings.from_config(merge(cfg, {"input": {"use_rgb": False}}))
+    assert off.input.rgb is None and off.input.layers == ("nir", "ndvi") and off.input.switched_off == ("rgb",)
+    assert off.evidence.weights == {"ndvi": 1.0}  # weights are rescaled over the layers in use
+    assert off.evidence.method == "black_tophat"  # set in the file, unused now
+    assert any("switched off: rgb" in n and "ndvi 1.00" in n for n in off.notes)
+
+
+def test_weights_are_relative_and_only_layers_in_use_need_a_method():
+    cfg = merge(load_config(PRETEST), {"evidence": {"rgb_weight": 1.0, "nir_weight": 1.0, "nir_method": "stretch", "ndvi_weight": 2.0}})
+    s = RunSettings.from_config(cfg)
+    assert s.evidence.weights == {"rgb": 0.25, "nir": 0.25, "ndvi": 0.5}
+    no_nir_method = load_config(PRETEST)
+    no_nir_method["evidence"]["nir_weight"] = 1.0
+    with pytest.raises(ConfigError, match=r"\[evidence\] nir_method"):
+        RunSettings.from_config(no_nir_method)
+    no_nir_method["input"]["use_nir"] = False  # off: its weight and missing method no longer matter
+    assert RunSettings.from_config(no_nir_method).evidence.weights == {"rgb": 1.0}
+
+
+def test_bad_layer_combinations_are_refused():
+    base = load_config(PRETEST)
+    none_on = merge(base, {"input": {"use_rgb": False, "use_nir": False, "use_ndvi": False}})
+    with pytest.raises(ConfigError, match=r"at least one input layer"):
+        RunSettings.from_config(none_on)
+    only_ndvi_without_weight = merge(base, {"input": {"use_rgb": False, "use_nir": False}})
+    with pytest.raises(ConfigError, match=r"every layer in use \(ndvi\) has weight 0"):
+        RunSettings.from_config(only_ndvi_without_weight)
+    nir_without_nir_band = merge(base, {"input": {"nir_bands": ["a", "red", "green"]},
+                                        "evidence": {"nir_weight": 1.0, "nir_method": "stretch"}})
+    with pytest.raises(ConfigError, match=r"band named 'nir'"):
+        RunSettings.from_config(nir_without_nir_band)
+    with pytest.raises(ConfigError, match=r">= 0"):
+        RunSettings.from_config(merge(base, {"evidence": {"ndvi_weight": -1.0}}))
+
+
+def test_ndvi_alone_needs_no_rgb_settings(tmp_path):
+    cfg = load_config(PRETEST)
+    for key in ("rgb", "rgb_bands", "nir", "nir_bands"):
+        del cfg["input"][key]
+    del cfg["evidence"]["method"], cfg["evidence"]["tophat_size_m"]
+    cfg = merge(cfg, {"evidence": {"ndvi_weight": 0.3}, "export": {"runs_dir": str(tmp_path / "area")}})
+    s = RunSettings.from_config(cfg)
+    assert s.input.layers == ("ndvi",) and s.input.rgb_bands is None and s.evidence.weights == {"ndvi": 1.0}
+    assert s.evidence.method is None and s.input.switched_off == ()
+    assert s.export.runs_dir == tmp_path / "area"
+
+
+def test_runs_dir_defaults_to_the_project_runs_folder():
+    assert RunSettings.from_config(load_config(PRETEST)).export.runs_dir == PROJECT_ROOT / "runs"
 
 
 def test_centroid_pretest_settings_build():

@@ -7,7 +7,7 @@ lists every missing or invalid key at once. Nothing is filled in silently.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +16,11 @@ from .spacing import SpacingRange
 
 _REQUIRED = object()
 
+INPUT_LAYERS = ("rgb", "nir", "ndvi")  # in this order; the first layer in use sets the analysis grid
 COVERAGE_METHODS = ("exact", "sampled", "centre", "all_touched")
-EVIDENCE_METHODS = ("gray_stretch", "black_tophat")
-NDVI_METHODS = ("white_tophat", "stretch")
+EVIDENCE_METHODS = ("gray_stretch", "black_tophat")  # RGB component: rows darker than the ground
+BRIGHT_METHODS = ("white_tophat", "stretch")  # NIR and NDVI components: rows brighter than the ground
+NDVI_METHODS = BRIGHT_METHODS
 SCALE_REGIONS = ("per_block", "all_blocks")
 NODATA_RULES = ("any_band", "all_bands")
 NORMALISATIONS = ("renormalise_valid", "full_kernel")
@@ -33,13 +35,21 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class InputSettings:
-    rgb: Path
-    rgb_bands: tuple[str, ...]
+    """Input layers. A layer that is not supplied, or whose use_* switch is off, has path None."""
+
+    rgb: Path | None
+    rgb_bands: tuple[str, ...] | None
     nir: Path | None
     nir_bands: tuple[str, ...] | None
-    nodata_value: float | None  # None: use the value declared in the file
+    nodata_value: float | None  # None: each RGB/NIR file's own declared NoData
     nodata_rule: str
     ndvi: Path | None = None  # single-band NDVI raster on the same grid; its own NoData applies
+    switched_off: tuple[str, ...] = ()  # layers with a path whose use_* switch is false
+
+    @property
+    def layers(self) -> tuple[str, ...]:
+        """The layers in use, in INPUT_LAYERS order."""
+        return tuple(name for name in INPUT_LAYERS if getattr(self, name) is not None)
 
 
 @dataclass(frozen=True)
@@ -52,15 +62,22 @@ class VineyardSettings:
 
 @dataclass(frozen=True)
 class EvidenceSettings:
-    method: str
+    """V is the weighted mean of one component per input layer in use (tools/imagery/evidence.py)."""
+
+    method: str | None  # RGB component; None when it is not used
     bands: tuple[str, ...]
     tophat_size_m: float | None
     scale_percentile: float
     stretch_percentiles: tuple[float, float]
     scale_region: str  # "per_block" or "all_blocks"
-    ndvi_weight: float  # 0 = RGB-only evidence
+    ndvi_weight: float  # relative weights as configured; `weights` holds what V uses
     ndvi_method: str | None
     ndvi_tophat_size_m: float | None
+    rgb_weight: float = 1.0
+    nir_weight: float = 0.0
+    nir_method: str | None = None
+    nir_tophat_size_m: float | None = None
+    weights: dict[str, float] = field(default_factory=dict)  # layers in use with weight > 0, rescaled to sum to 1
 
 
 @dataclass(frozen=True)
@@ -196,6 +213,7 @@ class ExportSettings:
     geopackage: bool
     overlay: bool
     drop_hanging_rows: bool = False  # keep only rows meeting their block boundary at exactly their two ends
+    runs_dir: Path | None = None  # run outputs go to <runs_dir>/<timestamp>[-name]/; None: <project>/runs
 
 
 @dataclass(frozen=True)
@@ -230,14 +248,21 @@ class RunSettings:
     def from_config(cls, config: dict[str, Any]) -> RunSettings:
         r = _Reader(config)
 
-        # [input]
-        rgb = r.get("input", "rgb", kind=str)
-        rgb_bands = r.get("input", "rgb_bands", kind=list)
-        nir = r.get("input", "nir", None, kind=str)
+        # [input]: each layer is optional; a layer is in use when its path is set and its use_* switch is on.
+        paths, switched_off = {}, []
+        for name in INPUT_LAYERS:
+            path = r.get("input", name, None, kind=str)
+            use = r.get("input", f"use_{name}", True, kind=bool)
+            if path is not None and use is False:
+                switched_off.append(name)
+            paths[name] = path if use else None
+        if not any(paths.values()):
+            r.missing.append("[input] rgb, nir or ndvi (at least one input layer, with its use_* switch on)")
+        rgb, nir, ndvi = (paths[name] for name in INPUT_LAYERS)
+        rgb_bands = r.get("input", "rgb_bands", None if rgb is None else _REQUIRED, kind=list)
         nir_bands = r.get("input", "nir_bands", None if nir is None else _REQUIRED, kind=list)
         nodata_value = r.get("input", "nodata_value", None, kind=float)
         nodata_rule = r.get("input", "nodata_rule", "any_band", choices=NODATA_RULES)
-        ndvi = r.get("input", "ndvi", None, kind=str)
 
         # [vineyards]
         source = r.get("vineyards", "source", kind=str)
@@ -245,17 +270,22 @@ class RunSettings:
         id_field = r.get("vineyards", "id_field", None, kind=str)
         blocks = r.get("vineyards", "blocks", None, kind=list)
 
-        # [evidence]
-        method = r.get("evidence", "method", choices=EVIDENCE_METHODS)
+        # [evidence]: one component per layer in use with weight > 0; only those need their method.
+        defaults = {"rgb": 1.0, "nir": 0.0, "ndvi": 0.0}
+        raw_weights = {name: r.get("evidence", f"{name}_weight", defaults[name], kind=float) for name in INPUT_LAYERS}
+        used = {name: w for name, w in raw_weights.items() if paths[name] is not None and w is not None and w > 0}
+        method = r.get("evidence", "method", _REQUIRED if "rgb" in used else None, choices=EVIDENCE_METHODS)
         ev_bands = r.get("evidence", "bands", ["red", "green", "blue"], kind=list)
-        tophat = r.get("evidence", "tophat_size_m", _REQUIRED if method == "black_tophat" else None, kind=float)
+        need = _REQUIRED if "rgb" in used and method == "black_tophat" else None
+        tophat = r.get("evidence", "tophat_size_m", need, kind=float)
         scale_pct = r.get("evidence", "scale_percentile", 99.0, kind=float)
         stretch = r.get("evidence", "stretch_percentiles", [2.0, 98.0], kind=list)
         scale_region = r.get("evidence", "scale_region", choices=SCALE_REGIONS)
-        ndvi_weight = r.get("evidence", "ndvi_weight", 0.0, kind=float)
-        use_ndvi = (ndvi_weight or 0.0) > 0
-        ndvi_method = r.get("evidence", "ndvi_method", _REQUIRED if use_ndvi else None, choices=NDVI_METHODS)
-        ndvi_tophat = r.get("evidence", "ndvi_tophat_size_m", _REQUIRED if ndvi_method == "white_tophat" else None, kind=float)
+        bright = {}
+        for name in ("nir", "ndvi"):
+            m = r.get("evidence", f"{name}_method", _REQUIRED if name in used else None, choices=BRIGHT_METHODS)
+            need = _REQUIRED if name in used and m == "white_tophat" else None
+            bright[name] = (m, r.get("evidence", f"{name}_tophat_size_m", need, kind=float))
 
         # [template]
         indices = r.get("template", "indices", kind=list)
@@ -310,6 +340,7 @@ class RunSettings:
         surfaces = r.get("storage", "surfaces", choices=SURFACE_STORAGE)
         export = [r.get("export", k, True, kind=bool) for k in ("shapefile", "geopackage", "overlay")]
         export.append(r.get("export", "drop_hanging_rows", False, kind=bool))
+        runs_dir = r.get("export", "runs_dir", "runs", kind=str)
         num_enabled = r.get("row_numbering", "enabled", False, kind=bool)
         num_interval = r.get("row_numbering", "transect_interval_m", 10.0, kind=float)
         smooth_enabled = r.get("smoothing", "enabled", True, kind=bool)
@@ -366,12 +397,16 @@ class RunSettings:
             problems.append("[centroid_pretest] windows and neighbour_rings must be >= 0")
         if val[0] > val[1]:
             problems.append("[validation] spacing_min_m is above spacing_max_m")
-        if nir is not None and nir_bands is not None and len(set(nir_bands)) != len(nir_bands):
-            problems.append("[input] nir_bands has duplicate names")
-        if not 0 <= ndvi_weight <= 1:
-            problems.append("[evidence] ndvi_weight must be in [0, 1]")
-        if use_ndvi and ndvi is None:
-            problems.append("[evidence] ndvi_weight > 0 needs [input] ndvi")
+        for name, bands in (("rgb", rgb_bands), ("nir", nir_bands)):
+            if bands is not None and len(set(bands)) != len(bands):
+                problems.append(f"[input] {name}_bands has duplicate names")
+        if any(w < 0 for w in raw_weights.values()):
+            problems.append("[evidence] rgb_weight, nir_weight and ndvi_weight must be >= 0")
+        elif not used:
+            in_use = ", ".join(name for name in INPUT_LAYERS if paths[name] is not None)
+            problems.append(f"[evidence] every layer in use ({in_use}) has weight 0, so there is no row evidence; set its *_weight > 0")
+        if "nir" in used and "nir" not in nir_bands:
+            problems.append("[evidence] nir_weight > 0 needs a band named 'nir' in [input] nir_bands")
         try:
             spacing = SpacingRange(s_min, s_max, s_step)
         except ValueError as exc:
@@ -379,8 +414,14 @@ class RunSettings:
         if problems:
             raise ConfigError("Invalid configuration:\n  " + "\n  ".join(problems))
 
-        # The estimate needs complete rows, so it turns hanging-row deletion on (TOML cannot tie settings together).
         notes = []
+        dropped = [name for name in switched_off if raw_weights[name] > 0]
+        if dropped:
+            notes.append(
+                f"Input layers switched off: {', '.join(dropped)}. Row evidence uses "
+                + ", ".join(f"{name} {w / sum(used.values()):.2f}" for name, w in used.items()) + "."
+            )
+        # The estimate needs complete rows, so it turns hanging-row deletion on (TOML cannot tie settings together).
         if mre_enabled and not export[3]:
             export[3] = True
             notes.append(
@@ -390,13 +431,14 @@ class RunSettings:
 
         return cls(
             input=InputSettings(
-                rgb=resolve_path(rgb),
-                rgb_bands=tuple(rgb_bands),
+                rgb=resolve_path(rgb) if rgb else None,
+                rgb_bands=tuple(rgb_bands) if rgb_bands else None,
                 nir=resolve_path(nir) if nir else None,
                 nir_bands=tuple(nir_bands) if nir_bands else None,
                 nodata_value=nodata_value,
                 nodata_rule=nodata_rule,
                 ndvi=resolve_path(ndvi) if ndvi else None,
+                switched_off=tuple(switched_off),
             ),
             vineyards=VineyardSettings(
                 source=resolve_path(source),
@@ -411,9 +453,14 @@ class RunSettings:
                 scale_percentile=scale_pct,
                 stretch_percentiles=(float(stretch[0]), float(stretch[1])),
                 scale_region=scale_region,
-                ndvi_weight=ndvi_weight,
-                ndvi_method=ndvi_method,
-                ndvi_tophat_size_m=ndvi_tophat,
+                ndvi_weight=raw_weights["ndvi"],
+                ndvi_method=bright["ndvi"][0],
+                ndvi_tophat_size_m=bright["ndvi"][1],
+                rgb_weight=raw_weights["rgb"],
+                nir_weight=raw_weights["nir"],
+                nir_method=bright["nir"][0],
+                nir_tophat_size_m=bright["nir"][1],
+                weights={name: w / sum(used.values()) for name, w in used.items()},
             ),
             template=TemplateSettings(
                 indices=tuple(int(i) for i in indices),
@@ -442,7 +489,7 @@ class RunSettings:
             validation=ValidationSettings(*val, sample_step_m=sample_step),
             review=ReviewSettings(**review),
             store_surfaces=surfaces,
-            export=ExportSettings(*export),
+            export=ExportSettings(*export, runs_dir=resolve_path(runs_dir)),
             smoothing=SmoothingSettings(enabled=smooth_enabled, max_turn_deg=smooth_turn),
             row_numbering=NumberingSettings(enabled=num_enabled, transect_interval_m=num_interval),
             missing_row_estimate=MissingRowSettings(

@@ -1,7 +1,7 @@
 """Run outputs: shapefiles and GeoPackage, polygons with row vertices, overlay image, report."""
 
 from .layers import block_records, bridge_layer, issue_layer, seed_geometry, write_outputs
-from .overlay import write_overlay
+from .overlay import to_display, write_overlay
 from .png import write_png
 from .polygons import insert_vertices
 from .report import open_choices, write_report
@@ -13,6 +13,7 @@ __all__ = [
     "issue_layer",
     "open_choices",
     "seed_geometry",
+    "to_display",
     "write_outputs",
     "write_overlay",
     "write_png",

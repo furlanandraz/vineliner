@@ -69,3 +69,48 @@ def test_describe_inputs_reports_rasters_and_polygons(tmp_path, capsys):
     raster, vector = json.loads(capsys.readouterr().out)
     assert raster["count"] == 2 and "crs_wkt" not in raster
     assert vector["layers"][0]["features"] == 1 and vector["layers"][0]["areas_m2"] == [4.0]
+
+
+def test_layers_switch_off_every_other_layer(run_pipeline_cli, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(run_pipeline_cli, "run_pipeline", lambda config, **kw: calls.update(config=config))
+    assert run_pipeline_cli.main([str(CONFIG_DIR / "centroid-pretest.toml"), "--layers", "ndvi", "nir"]) == 0
+    flags = {k: calls["config"]["input"][k] for k in ("use_rgb", "use_nir", "use_ndvi")}
+    assert flags == {"use_rgb": False, "use_nir": True, "use_ndvi": True}
+
+
+def test_layers_without_a_path_exit_with_code_2(run_pipeline_cli, tmp_path, capsys):
+    only_rgb = tmp_path / "rgb.toml"
+    only_rgb.write_text('[input]\nrgb = "x.tif"\nrgb_bands = ["red", "green", "blue"]\n')
+    assert run_pipeline_cli.main([str(only_rgb), "--layers", "nir"]) == 2
+    assert "no [input] path for nir" in capsys.readouterr().err
+
+
+def test_prepare_inputs_puts_layers_on_one_grid_with_provenance(tmp_path, capsys):
+    import rasterio
+
+    src = tmp_path / "ndvi_4326.tif"
+    with rasterio.open(src, "w", driver="GTiff", width=50, height=50, count=1, dtype="float32", crs="EPSG:4326",
+                       transform=rasterio.Affine(1e-6, 0, 13.4604, 0, -1e-6, 45.9716), nodata=0.0) as dst:
+        dst.write(np.full((1, 50, 50), 0.7, np.float32))
+    rgb = tmp_path / "rgba_4326.tif"
+    with rasterio.open(rgb, "w", driver="GTiff", width=80, height=80, count=4, dtype="uint8", crs="EPSG:4326",
+                       transform=rasterio.Affine(6e-7, 0, 13.4604, 0, -6e-7, 45.9716), nodata=0) as dst:
+        dst.write(np.full((4, 80, 80), 120, np.uint8))
+    out = tmp_path / "area"
+    code = load("prepare_inputs").main([str(out), "--crs", "EPSG:6708", "--pixel", "0.5",
+                                        "--layer", "ndvi", str(src), "--layer", "rgb", str(rgb), "1", "2", "3"])
+    assert code == 0 and "Grid:" in capsys.readouterr().out
+    summary = json.loads((out / "prepare.json").read_text())
+    assert summary["crs"] == "EPSG:6708" and summary["layers"]["rgb"]["count"] == 3  # alpha dropped
+    assert summary["layers"]["ndvi"]["provenance"]["VINELINER_SOURCE_CRS"] == "EPSG:4326"
+    with rasterio.open(out / "ndvi.tif") as a, rasterio.open(out / "rgb.tif") as b:
+        assert a.transform == b.transform and a.shape == b.shape and a.crs.to_epsg() == 6708
+
+
+def test_prepare_inputs_refuses_bad_layer_arguments(tmp_path):
+    prepare = load("prepare_inputs")
+    with pytest.raises(SystemExit):
+        prepare.main([str(tmp_path), "--crs", "EPSG:6708", "--pixel", "0.5", "--layer", "rgb", "x.tif", "one"])
+    with pytest.raises(SystemExit):
+        prepare.main([str(tmp_path), "--crs", "EPSG:6708", "--pixel", "0.5", "--layer", "rgb"])

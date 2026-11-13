@@ -15,12 +15,13 @@ analysis raster's pixel size (PROJECT.md §7).
 """
 
 from .loader import CONFIG_DIR, DEFAULT_CONFIG, PROJECT_ROOT, load_config, merge, read_config_file, read_toml, resolve_path
-from .settings import ConfigError, RunSettings
+from .settings import INPUT_LAYERS, ConfigError, RunSettings
 from .spacing import SpacingRange
 
 __all__ = [
     "CONFIG_DIR",
     "DEFAULT_CONFIG",
+    "INPUT_LAYERS",
     "PROJECT_ROOT",
     "ConfigError",
     "RunSettings",

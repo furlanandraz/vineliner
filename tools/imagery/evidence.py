@@ -2,22 +2,22 @@
 
 Polarity: high V always means stronger row evidence.
 
-V is built from up to two components, each a raw response that is then
-scaled to [0, 1] over a scaling region (one block, or all blocks):
+V is built from one component per input layer in use, each a raw response
+that is then scaled to [0, 1] over a scaling region (one block, or all blocks):
 
-  gray component (from the configured RGB/NIR bands, averaged)
+  rgb component (gray from the configured bands, averaged; rows are darker)
     black_tophat   closing(gray) - gray with a square of side tophat_size_m.
                    Keeps narrow dark features (rows on bright soil) and removes
                    broad brightness changes. Scaled by a percentile: 0 -> 0,
                    P(scale_percentile) -> 1.
     gray_stretch   -gray, scaled between the stretch percentiles.
 
-  ndvi component (optional, from an NDVI raster; vines are greener than soil)
-    white_tophat   ndvi - opening(ndvi): narrow bright (green) features. Scaled
-                   like black_tophat.
-    stretch        ndvi, scaled between the stretch percentiles.
+  nir and ndvi components (one band each; canopy is brighter than the ground)
+    white_tophat   image - opening(image): narrow bright features. Scaled like
+                   black_tophat.
+    stretch        image, scaled between the stretch percentiles.
 
-  V = (1 - ndvi_weight) * V_gray + ndvi_weight * V_ndvi
+  V = sum_k w_k * V_k, with the weights of the components in use summing to 1.
 
 Invalid pixels are replaced by the median valid value before filtering, so
 they cannot leak into neighbours, and V is 0 there.
@@ -31,7 +31,8 @@ import numpy as np
 from scipy import ndimage
 
 GRAY_METHODS = ("black_tophat", "gray_stretch")
-NDVI_METHODS = ("white_tophat", "stretch")
+BRIGHT_METHODS = ("white_tophat", "stretch")
+NDVI_METHODS = BRIGHT_METHODS
 
 
 @dataclass
@@ -72,15 +73,22 @@ def gray_response(gray: np.ndarray, valid: np.ndarray, method: str, pixel_size_m
     raise ValueError(f"unknown gray evidence method {method!r}")
 
 
-def ndvi_response(ndvi: np.ndarray, valid: np.ndarray, method: str, pixel_size_m: float, tophat_size_m: float | None) -> Response:
-    img = _filled(ndvi, valid)
+def bright_response(
+    image: np.ndarray, valid: np.ndarray, method: str, pixel_size_m: float, tophat_size_m: float | None, name: str
+) -> Response:
+    """Response of a band where rows are brighter than the ground, such as NIR or NDVI."""
+    img = _filled(image, valid)
     if method == "white_tophat":
         size = _size_px(tophat_size_m, pixel_size_m, method)
         raw = img - ndimage.grey_opening(img, size=(size, size))
-        return Response("ndvi", raw, "percentile", {"method": method, "tophat_size_m": tophat_size_m, "tophat_size_px": size})
+        return Response(name, raw, "percentile", {"method": method, "tophat_size_m": tophat_size_m, "tophat_size_px": size})
     if method == "stretch":
-        return Response("ndvi", img, "stretch", {"method": method})
-    raise ValueError(f"unknown NDVI evidence method {method!r}")
+        return Response(name, img, "stretch", {"method": method})
+    raise ValueError(f"unknown {name} evidence method {method!r}")
+
+
+def ndvi_response(ndvi: np.ndarray, valid: np.ndarray, method: str, pixel_size_m: float, tophat_size_m: float | None) -> Response:
+    return bright_response(ndvi, valid, method, pixel_size_m, tophat_size_m, "ndvi")
 
 
 def scale_response(resp: Response, region: np.ndarray, scale_percentile: float, stretch_percentiles: tuple[float, float]) -> tuple[np.ndarray, dict]:
