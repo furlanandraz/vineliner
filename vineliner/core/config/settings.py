@@ -1,31 +1,33 @@
 """Typed, validated view of a run configuration (PROJECT.md §12).
 
-RunSettings.from_config() refuses to build while any OPEN key is unset and
-lists every missing or invalid key at once. Nothing is filled in silently.
+The configuration is core/defaults.toml with the plugin dialog's values merged
+on top (config.loader.plugin_config). RunSettings.from_config() lists every
+missing or invalid key at once. Nothing is filled in silently.
+
+Input layers are not part of the configuration: the plugin passes them to the
+pipeline, and EvidenceSettings.weights_for() rescales the evidence weights over
+the components those layers provide.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
-from .loader import resolve_path
 from .spacing import SpacingRange
 
 _REQUIRED = object()
 
-INPUT_LAYERS = ("rgb", "nir", "ndvi")  # in this order; the first layer in use sets the analysis grid
+INPUT_LAYERS = ("rgb", "nir", "ndvi")  # RGB, NIR-R-G, NDVI; also the evidence components, in this order
 COVERAGE_METHODS = ("exact", "sampled", "centre", "all_touched")
 EVIDENCE_METHODS = ("gray_stretch", "black_tophat")  # RGB component: rows darker than the ground
 BRIGHT_METHODS = ("white_tophat", "stretch")  # NIR and NDVI components: rows brighter than the ground
 NDVI_METHODS = BRIGHT_METHODS
 SCALE_REGIONS = ("per_block", "all_blocks")
-NODATA_RULES = ("any_band", "all_bands")
+COMBINE_METHODS = ("best_per_block", "weighted")  # how several evidence components make V
 NORMALISATIONS = ("renormalise_valid", "full_kernel")
 TRANSLATION_BOXES = ("tested_d", "nominal_d0")
-SURFACE_STORAGE = ("all", "winning_spacing", "none")
 SELECTION_METHODS = ("best", "orientation_consensus")
 
 
@@ -34,50 +36,32 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class InputSettings:
-    """Input layers. A layer that is not supplied, or whose use_* switch is off, has path None."""
-
-    rgb: Path | None
-    rgb_bands: tuple[str, ...] | None
-    nir: Path | None
-    nir_bands: tuple[str, ...] | None
-    nodata_value: float | None  # None: each RGB/NIR file's own declared NoData
-    nodata_rule: str
-    ndvi: Path | None = None  # single-band NDVI raster on the same grid; its own NoData applies
-    switched_off: tuple[str, ...] = ()  # layers with a path whose use_* switch is false
-
-    @property
-    def layers(self) -> tuple[str, ...]:
-        """The layers in use, in INPUT_LAYERS order."""
-        return tuple(name for name in INPUT_LAYERS if getattr(self, name) is not None)
-
-
-@dataclass(frozen=True)
-class VineyardSettings:
-    source: Path
-    layer: str | None
-    id_field: str | None
-    blocks: tuple[int, ...] | None  # None: every block
-
-
-@dataclass(frozen=True)
 class EvidenceSettings:
-    """V is the weighted mean of one component per input layer in use (tools/imagery/evidence.py)."""
+    """V is the weighted mean of one component per input layer in use (imagery/evidence.py)."""
 
-    method: str | None  # RGB component; None when it is not used
+    method: str  # RGB component
     bands: tuple[str, ...]
     tophat_size_m: float | None
     scale_percentile: float
     stretch_percentiles: tuple[float, float]
     scale_region: str  # "per_block" or "all_blocks"
-    ndvi_weight: float  # relative weights as configured; `weights` holds what V uses
-    ndvi_method: str | None
+    ndvi_weight: float  # relative weights, rescaled over the components in use
+    ndvi_method: str
     ndvi_tophat_size_m: float | None
     rgb_weight: float = 1.0
     nir_weight: float = 0.0
-    nir_method: str | None = None
+    nir_method: str = "white_tophat"
     nir_tophat_size_m: float | None = None
-    weights: dict[str, float] = field(default_factory=dict)  # layers in use with weight > 0, rescaled to sum to 1
+    combine: str = "weighted"  # "weighted": weighted mean; "best_per_block": the component showing rows best, per block
+
+    def weights_for(self, components) -> dict[str, float]:
+        """Shares of V for the components in use (those with weight > 0), summing to 1, in INPUT_LAYERS order."""
+        raw = {"rgb": self.rgb_weight, "nir": self.nir_weight, "ndvi": self.ndvi_weight}
+        used = {name: raw[name] for name in INPUT_LAYERS if name in components and raw[name] > 0}
+        if not used:
+            raise ConfigError(f"the evidence components in use ({', '.join(components)}) all have weight 0")
+        total = sum(used.values())
+        return {name: w / total for name, w in used.items()}
 
 
 @dataclass(frozen=True)
@@ -92,7 +76,7 @@ class TemplateSettings:
 class KernelSettings:
     coverage: str
     subpixel_samples: int | None
-    cache_dir: Path | None = None  # None: build kernels every run
+    cache: bool = False  # save kernels in the cache folder the caller gives and reuse them
 
 
 @dataclass(frozen=True)
@@ -121,7 +105,7 @@ class ScoringSettings:
 
 @dataclass(frozen=True)
 class CentroidPretestSettings:
-    """Centroid pre-test (tools/search/pretest.py)."""
+    """Centroid pre-test (search/pretest.py)."""
 
     enabled: bool
     theta_window_deg: float
@@ -178,7 +162,7 @@ class ReviewSettings:
 
 @dataclass(frozen=True)
 class SmoothingSettings:
-    """Maximum direction change between row vertices (tools/reconstruction/smoothing.py)."""
+    """Maximum direction change between row vertices (reconstruction/smoothing.py)."""
 
     enabled: bool
     max_turn_deg: float
@@ -186,7 +170,7 @@ class SmoothingSettings:
 
 @dataclass(frozen=True)
 class NumberingSettings:
-    """Row numbering per block (tools/reconstruction/numbering.py)."""
+    """Row numbering per block (reconstruction/numbering.py)."""
 
     enabled: bool
     transect_interval_m: float
@@ -194,7 +178,7 @@ class NumberingSettings:
 
 @dataclass(frozen=True)
 class MissingRowSettings:
-    """Missing-row estimate (tools/reconstruction/missing.py)."""
+    """Missing-row estimate (reconstruction/missing.py)."""
 
     enabled: bool
     gap_tolerance_frac: float  # neighbours within width * (1 +/- this) are correctly spaced
@@ -208,18 +192,7 @@ class MissingRowSettings:
 
 
 @dataclass(frozen=True)
-class ExportSettings:
-    shapefile: bool
-    geopackage: bool
-    overlay: bool
-    drop_hanging_rows: bool = False  # keep only rows meeting their block boundary at exactly their two ends
-    runs_dir: Path | None = None  # run outputs go to <runs_dir>/<timestamp>[-name]/; None: <project>/runs
-
-
-@dataclass(frozen=True)
 class RunSettings:
-    input: InputSettings
-    vineyards: VineyardSettings
     evidence: EvidenceSettings
     template: TemplateSettings
     kernels: KernelSettings
@@ -239,8 +212,7 @@ class RunSettings:
     smoothing: SmoothingSettings
     missing_row_estimate: MissingRowSettings
     row_numbering: NumberingSettings
-    store_surfaces: str
-    export: ExportSettings
+    drop_hanging_rows: bool  # keep only rows meeting their block boundary at exactly their two ends
     raw: dict[str, Any]
     notes: tuple[str, ...] = ()  # settings the code adjusted, reported at the start of a run
 
@@ -248,44 +220,19 @@ class RunSettings:
     def from_config(cls, config: dict[str, Any]) -> RunSettings:
         r = _Reader(config)
 
-        # [input]: each layer is optional; a layer is in use when its path is set and its use_* switch is on.
-        paths, switched_off = {}, []
-        for name in INPUT_LAYERS:
-            path = r.get("input", name, None, kind=str)
-            use = r.get("input", f"use_{name}", True, kind=bool)
-            if path is not None and use is False:
-                switched_off.append(name)
-            paths[name] = path if use else None
-        if not any(paths.values()):
-            r.missing.append("[input] rgb, nir or ndvi (at least one input layer, with its use_* switch on)")
-        rgb, nir, ndvi = (paths[name] for name in INPUT_LAYERS)
-        rgb_bands = r.get("input", "rgb_bands", None if rgb is None else _REQUIRED, kind=list)
-        nir_bands = r.get("input", "nir_bands", None if nir is None else _REQUIRED, kind=list)
-        nodata_value = r.get("input", "nodata_value", None, kind=float)
-        nodata_rule = r.get("input", "nodata_rule", "any_band", choices=NODATA_RULES)
-
-        # [vineyards]
-        source = r.get("vineyards", "source", kind=str)
-        layer = r.get("vineyards", "layer", None, kind=str)
-        id_field = r.get("vineyards", "id_field", None, kind=str)
-        blocks = r.get("vineyards", "blocks", None, kind=list)
-
-        # [evidence]: one component per layer in use with weight > 0; only those need their method.
-        defaults = {"rgb": 1.0, "nir": 0.0, "ndvi": 0.0}
-        raw_weights = {name: r.get("evidence", f"{name}_weight", defaults[name], kind=float) for name in INPUT_LAYERS}
-        used = {name: w for name, w in raw_weights.items() if paths[name] is not None and w is not None and w > 0}
-        method = r.get("evidence", "method", _REQUIRED if "rgb" in used else None, choices=EVIDENCE_METHODS)
+        # [evidence]: one component per input layer; the pipeline uses those the inputs provide.
+        weights_in = {name: r.get("evidence", f"{name}_weight", 1.0 if name == "rgb" else 0.0, kind=float) for name in INPUT_LAYERS}
+        method = r.get("evidence", "method", choices=EVIDENCE_METHODS)
         ev_bands = r.get("evidence", "bands", ["red", "green", "blue"], kind=list)
-        need = _REQUIRED if "rgb" in used and method == "black_tophat" else None
-        tophat = r.get("evidence", "tophat_size_m", need, kind=float)
+        tophat = r.get("evidence", "tophat_size_m", _REQUIRED if method == "black_tophat" else None, kind=float)
         scale_pct = r.get("evidence", "scale_percentile", 99.0, kind=float)
         stretch = r.get("evidence", "stretch_percentiles", [2.0, 98.0], kind=list)
         scale_region = r.get("evidence", "scale_region", choices=SCALE_REGIONS)
+        combine = r.get("evidence", "combine", "weighted", choices=COMBINE_METHODS)
         bright = {}
         for name in ("nir", "ndvi"):
-            m = r.get("evidence", f"{name}_method", _REQUIRED if name in used else None, choices=BRIGHT_METHODS)
-            need = _REQUIRED if name in used and m == "white_tophat" else None
-            bright[name] = (m, r.get("evidence", f"{name}_tophat_size_m", need, kind=float))
+            m = r.get("evidence", f"{name}_method", choices=BRIGHT_METHODS)
+            bright[name] = (m, r.get("evidence", f"{name}_tophat_size_m", _REQUIRED if m == "white_tophat" else None, kind=float))
 
         # [template]
         indices = r.get("template", "indices", kind=list)
@@ -297,7 +244,6 @@ class RunSettings:
         coverage = r.get("kernels", "coverage", choices=COVERAGE_METHODS)
         samples = r.get("kernels", "subpixel_samples", _REQUIRED if coverage == "sampled" else None, kind=int)
         use_cache = r.get("kernels", "cache", False, kind=bool)
-        cache_dir = r.get("kernels", "cache_dir", ".cache/kernels", kind=str)
 
         # [spacing], [rotation], [translation], [centres]
         nominal = r.get("spacing", "nominal_m", kind=float)
@@ -331,16 +277,13 @@ class RunSettings:
             "join_angle_deg", "max_row_length_m",
         )
         rec = {k: r.get("reconstruction", k, kind=float) for k in rec_keys}
+        drop_hanging = r.get("reconstruction", "drop_hanging_rows", False, kind=bool)
 
-        # [validation], [storage], [export]
+        # [validation], [review], [smoothing], [missing_row_estimate], [row_numbering]
         val = [r.get("validation", k, kind=float) for k in ("spacing_min_m", "spacing_max_m", "tolerance_m")]
         sample_step = r.get("validation", "sample_step_m", 1.0, kind=float)
         review_keys = ("max_bridged_m", "max_bridged_frac", "max_spacing_out_frac", "min_support_frac", "min_length_m")
         review = {k: r.get("review", k, kind=float) for k in review_keys}
-        surfaces = r.get("storage", "surfaces", choices=SURFACE_STORAGE)
-        export = [r.get("export", k, True, kind=bool) for k in ("shapefile", "geopackage", "overlay")]
-        export.append(r.get("export", "drop_hanging_rows", False, kind=bool))
-        runs_dir = r.get("export", "runs_dir", "runs", kind=str)
         num_enabled = r.get("row_numbering", "enabled", False, kind=bool)
         num_interval = r.get("row_numbering", "transect_interval_m", 10.0, kind=float)
         smooth_enabled = r.get("smoothing", "enabled", True, kind=bool)
@@ -397,16 +340,8 @@ class RunSettings:
             problems.append("[centroid_pretest] windows and neighbour_rings must be >= 0")
         if val[0] > val[1]:
             problems.append("[validation] spacing_min_m is above spacing_max_m")
-        for name, bands in (("rgb", rgb_bands), ("nir", nir_bands)):
-            if bands is not None and len(set(bands)) != len(bands):
-                problems.append(f"[input] {name}_bands has duplicate names")
-        if any(w < 0 for w in raw_weights.values()):
-            problems.append("[evidence] rgb_weight, nir_weight and ndvi_weight must be >= 0")
-        elif not used:
-            in_use = ", ".join(name for name in INPUT_LAYERS if paths[name] is not None)
-            problems.append(f"[evidence] every layer in use ({in_use}) has weight 0, so there is no row evidence; set its *_weight > 0")
-        if "nir" in used and "nir" not in nir_bands:
-            problems.append("[evidence] nir_weight > 0 needs a band named 'nir' in [input] nir_bands")
+        if any(w < 0 for w in weights_in.values()) or not any(w > 0 for w in weights_in.values()):
+            problems.append("[evidence] rgb_weight, nir_weight and ndvi_weight must be >= 0, and one of them > 0")
         try:
             spacing = SpacingRange(s_min, s_max, s_step)
         except ValueError as exc:
@@ -415,37 +350,15 @@ class RunSettings:
             raise ConfigError("Invalid configuration:\n  " + "\n  ".join(problems))
 
         notes = []
-        dropped = [name for name in switched_off if raw_weights[name] > 0]
-        if dropped:
-            notes.append(
-                f"Input layers switched off: {', '.join(dropped)}. Row evidence uses "
-                + ", ".join(f"{name} {w / sum(used.values()):.2f}" for name, w in used.items()) + "."
-            )
         # The estimate needs complete rows, so it turns hanging-row deletion on (TOML cannot tie settings together).
-        if mre_enabled and not export[3]:
-            export[3] = True
+        if mre_enabled and not drop_hanging:
+            drop_hanging = True
             notes.append(
-                "[missing_row_estimate] is on, so [export] drop_hanging_rows is turned on too: "
+                "[missing_row_estimate] is on, so [reconstruction] drop_hanging_rows is turned on too: "
                 "rows are only estimated between complete neighbouring rows."
             )
 
         return cls(
-            input=InputSettings(
-                rgb=resolve_path(rgb) if rgb else None,
-                rgb_bands=tuple(rgb_bands) if rgb_bands else None,
-                nir=resolve_path(nir) if nir else None,
-                nir_bands=tuple(nir_bands) if nir_bands else None,
-                nodata_value=nodata_value,
-                nodata_rule=nodata_rule,
-                ndvi=resolve_path(ndvi) if ndvi else None,
-                switched_off=tuple(switched_off),
-            ),
-            vineyards=VineyardSettings(
-                source=resolve_path(source),
-                layer=layer,
-                id_field=id_field,
-                blocks=tuple(int(b) for b in blocks) if blocks is not None else None,
-            ),
             evidence=EvidenceSettings(
                 method=method,
                 bands=tuple(ev_bands),
@@ -453,14 +366,14 @@ class RunSettings:
                 scale_percentile=scale_pct,
                 stretch_percentiles=(float(stretch[0]), float(stretch[1])),
                 scale_region=scale_region,
-                ndvi_weight=raw_weights["ndvi"],
+                combine=combine,
+                ndvi_weight=weights_in["ndvi"],
                 ndvi_method=bright["ndvi"][0],
                 ndvi_tophat_size_m=bright["ndvi"][1],
-                rgb_weight=raw_weights["rgb"],
-                nir_weight=raw_weights["nir"],
+                rgb_weight=weights_in["rgb"],
+                nir_weight=weights_in["nir"],
                 nir_method=bright["nir"][0],
                 nir_tophat_size_m=bright["nir"][1],
-                weights={name: w / sum(used.values()) for name, w in used.items()},
             ),
             template=TemplateSettings(
                 indices=tuple(int(i) for i in indices),
@@ -468,7 +381,7 @@ class RunSettings:
                 line_length_m=line_length,
                 band_width_px=band_width,
             ),
-            kernels=KernelSettings(coverage=coverage, subpixel_samples=samples, cache_dir=resolve_path(cache_dir) if use_cache else None),
+            kernels=KernelSettings(coverage=coverage, subpixel_samples=samples, cache=use_cache),
             spacing=spacing,
             spacing_nominal_m=nominal,
             rotation=RotationSettings(*rot),
@@ -488,8 +401,7 @@ class RunSettings:
             reconstruction=ReconstructionSettings(**rec),
             validation=ValidationSettings(*val, sample_step_m=sample_step),
             review=ReviewSettings(**review),
-            store_surfaces=surfaces,
-            export=ExportSettings(*export, runs_dir=resolve_path(runs_dir)),
+            drop_hanging_rows=drop_hanging,
             smoothing=SmoothingSettings(enabled=smooth_enabled, max_turn_deg=smooth_turn),
             row_numbering=NumberingSettings(enabled=num_enabled, transect_interval_m=num_interval),
             missing_row_estimate=MissingRowSettings(
@@ -537,7 +449,7 @@ class _Reader:
     def raise_if_failed(self) -> None:
         lines = []
         if self.missing:
-            lines.append("Missing keys (OPEN choices must be set explicitly, PROJECT.md §15):")
+            lines.append("Missing keys:")
             lines += [f"  {m}" for m in self.missing]
         if self.invalid:
             lines.append("Invalid values:")

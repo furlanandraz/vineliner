@@ -1,6 +1,6 @@
 """The analysis pixel grid and the single world <-> array conversion (PROJECT.md §3, §6.1).
 
-Conventions used everywhere in tools/:
+Conventions used everywhere in the core:
 
 - World coordinates are projected easting x and northing y, in metres.
 - Array coordinates are (row, col). Integer values are pixel centres, so pixel

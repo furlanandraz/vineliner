@@ -68,7 +68,7 @@ def meets_boundary_twice(line, polygon, tol: float) -> bool:
     """True when the line meets the block boundary at exactly two points: its two ends.
 
     Both endpoints must lie within tol of the boundary, and the rest of the line
-    must not touch the boundary. This is the test behind [export] drop_hanging_rows.
+    must not touch the boundary. This is the test behind [reconstruction] drop_hanging_rows.
     """
     boundary = polygon.boundary
     coords = line.coords

@@ -2,7 +2,7 @@
 
 With [missing_row_estimate] enabled, rows the image did not show are added
 between neighbouring detected rows that stand too far apart. It runs on
-complete rows only, so hanging rows are deleted first ([export]
+complete rows only, so hanging rows are deleted first ([reconstruction]
 drop_hanging_rows is forced on, see config/settings.py).
 
 1. Row width d, per block: the median distance between neighbouring rows,

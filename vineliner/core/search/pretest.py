@@ -140,6 +140,36 @@ def run_pretest(
     )
 
 
+def box_scores(block, grid: Grid, valid_block: np.ndarray, search: LocalSearch, mv: np.ndarray, m: np.ndarray,
+               origin: tuple[int, int], box_spacing_m: float, rings: int = 1) -> np.ndarray:
+    """Best template score at the centroid box and the rings of boxes around it, each searched in full.
+
+    The same boxes for any evidence raster mv, so scores of different rasters compare
+    fairly (unlike the pre-test, which stops at the first ring with an accepted box).
+    Empty when the centroid lies outside the polygon or no box is valid.
+    """
+    polygon = block.polygon
+    c = polygon.centroid
+    if c.is_empty or not polygon.contains(c):
+        c = polygon.representative_point()
+    crow, ccol = (int(v) for v in grid.nearest_pixel(c.x, c.y))
+    step = max(1, int(round(box_spacing_m / min(grid.pixel_size))))
+    rows, cols = [], []
+    for ring in range(rings + 1):
+        for dr, dc in ring_offsets(ring):
+            r, k = crow + dr * step, ccol + dc * step
+            if 0 <= r < grid.height and 0 <= k < grid.width and valid_block[r, k]:
+                x, y = grid.array_to_world(r, k)
+                if shapely.intersects_xy(polygon, float(x), float(y)):
+                    rows.append(r)
+                    cols.append(k)
+    if not rows:
+        return np.array([])
+    full = search if search.is_full else search.restricted(None, None)
+    res = full.run(mv, m, np.array(rows) - origin[0], np.array(cols) - origin[1])
+    return np.asarray(res.best_score, dtype=float)
+
+
 def window_edge_share(theta_deg_selected: np.ndarray, pretest: Pretest, thetas, step_deg: float) -> float:
     """Share of selected directions on the edge of the pre-test rotation window.
 

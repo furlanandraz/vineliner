@@ -12,7 +12,7 @@ the image supports it and what the checks found, then:
               NOTE_SPACING_FRAC of samples or more); else "high".
   issues      the reasons, in words, for the attribute table.
 
-Rows added by the missing-row estimate (tools/reconstruction/missing.py) get
+Rows added by the missing-row estimate (reconstruction/missing.py) get
 estimated = 1. A purely interpolated one gets conf = "estimated" and review = 1.
 One with detected pieces squashed into it (squash.py) gets conf = "merged"; it
 is flagged for review when less than MERGED_MIN_DET_PCT of it comes from the
