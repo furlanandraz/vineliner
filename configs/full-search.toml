@@ -1,8 +1,0 @@
-# Full grid search: the agreed baseline (PROJECT.md §7).
-#
-# The same as centroid-pretest.toml, but every grid centre searches all
-# rotations and spacings. Use it to compare against the centroid pre-test.
-extends = "centroid-pretest.toml"
-
-[centroid_pretest]
-enabled = false
