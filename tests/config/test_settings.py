@@ -1,174 +1,80 @@
-"""Config loading, merging and RunSettings validation."""
+"""Packaged defaults, the dialog's row width range, and RunSettings validation."""
 
 import math
-from pathlib import Path
 
 import pytest
 
-from tools.config import CONFIG_DIR, PROJECT_ROOT, ConfigError, RunSettings, load_config, merge, read_toml
-
-PRETEST = CONFIG_DIR / "centroid-pretest.toml"
-DEFAULT = read_toml(CONFIG_DIR / "default.toml")
+from vineliner.core.config import WIDTH_OPTIONS, ConfigError, RunSettings, defaults, merge, plugin_config
 
 
-def test_config_dir_is_the_repo_configs_folder():
-    assert CONFIG_DIR == Path(__file__).resolve().parents[2] / "configs"
+def test_defaults_are_the_final_bordeaux_configuration():
+    s = RunSettings.from_config(plugin_config(1.2, 1.6))
+    assert s.centroid_pretest.enabled and s.kernels.cache
+    assert s.missing_row_estimate.enabled and s.missing_row_estimate.merge_pieces
+    assert s.row_numbering.enabled and s.drop_hanging_rows and s.smoothing.enabled
+    assert s.evidence.method == "black_tophat" and s.evidence.tophat_size_m == 1.4 and s.evidence.scale_region == "per_block"
+    assert s.template.line_length_m == 2.0 and s.template.band_width_px == 3
+    assert s.selection.method == "orientation_consensus" and s.seed_lines == (-1, 0, 1)
+    assert (s.reconstruction.max_gap_m, s.reconstruction.join_distance_frac) == (50.0, 0.35)
+    assert s.notes == ()  # nothing had to be adjusted
 
 
-def test_default_template_matches_project_md():
-    t = DEFAULT["template"]
+def test_template_defaults_match_project_md():
+    t = defaults()["template"]
     assert t["indices"] == [-2, -1, 0, 1, 2]
-    assert math.isclose(sum(t["weights"]), 1.0)  # not 1.10 (PROJECT.md §6)
-    assert t["weights"] == t["weights"][::-1]
+    assert math.isclose(sum(t["weights"]), 1.0) and t["weights"] == t["weights"][::-1]
+    assert len(RunSettings.from_config(plugin_config(1.8, 2.2)).rotation.angles()) == 180
 
 
-def test_default_rotation_gives_180_options():
-    r = DEFAULT["rotation"]
-    assert len(range(r["start_deg"], r["stop_deg"], r["step_deg"])) == 180
+def test_row_width_range_sets_the_searched_widths_and_the_spacing_check():
+    s = RunSettings.from_config(plugin_config(1.2, 1.6))
+    assert s.spacing.count == WIDTH_OPTIONS == 21
+    assert s.spacing.values()[0] == 1.2 and s.spacing.values()[-1] == 1.6 and s.spacing.values()[1] == 1.22
+    assert s.spacing_nominal_m == pytest.approx(1.4)
+    assert (s.validation.spacing_min_m, s.validation.spacing_max_m) == (1.2, 1.6)
+    single = RunSettings.from_config(plugin_config(2.0, 2.0))
+    assert single.spacing.values() == (2.0,)
+    for lo, hi in ((0.0, 1.0), (2.0, 1.5), (-1.0, 2.0)):
+        with pytest.raises(ValueError, match="row width range"):
+            plugin_config(lo, hi)
 
 
-def test_translation_increment_is_not_configurable():
-    assert "increment_m" not in DEFAULT["translation"]
+def test_evidence_weights_rescale_over_the_components_present():
+    ev = RunSettings.from_config(plugin_config(1.8, 2.2)).evidence
+    assert ev.weights_for(("rgb",)) == {"rgb": 1.0}
+    assert ev.weights_for(("ndvi",)) == {"ndvi": 1.0}
+    three = ev.weights_for(("rgb", "nir", "ndvi"))
+    assert list(three) == ["rgb", "nir", "ndvi"] and all(w == pytest.approx(1 / 3) for w in three.values())
+    no_nir = RunSettings.from_config(plugin_config(1.8, 2.2, {"evidence": {"nir_weight": 0.0}})).evidence
+    assert no_nir.weights_for(("rgb", "nir", "ndvi")) == {"rgb": 0.5, "ndvi": 0.5}
+    with pytest.raises(ConfigError, match="weight 0"):
+        no_nir.weights_for(("nir",))
 
 
-def test_defaults_alone_are_refused_and_every_open_key_is_listed():
-    with pytest.raises(ConfigError) as exc:
-        RunSettings.from_config(load_config())
-    message = str(exc.value)
-    for key in ("[input] rgb, nir or ndvi", "[vineyards] source", "[template] line_length_m",
-                "[translation] box", "[centres] spacing_m", "[scoring] normalisation", "[storage] surfaces"):
-        assert key in message
-
-
-def test_rgb_component_needs_its_method():
-    cfg = load_config(PRETEST)
-    del cfg["evidence"]["method"]
-    with pytest.raises(ConfigError, match=r"\[evidence\] method"):
-        RunSettings.from_config(cfg)
-
-
-def test_layers_can_be_switched_off_without_other_changes():
-    cfg = merge(load_config(PRETEST), {"evidence": {"ndvi_weight": 1.0}})  # ndvi_method is already set
-    s = RunSettings.from_config(cfg)
-    assert s.input.layers == ("rgb", "nir", "ndvi") and s.evidence.weights == {"rgb": 0.5, "ndvi": 0.5}
-    off = RunSettings.from_config(merge(cfg, {"input": {"use_rgb": False}}))
-    assert off.input.rgb is None and off.input.layers == ("nir", "ndvi") and off.input.switched_off == ("rgb",)
-    assert off.evidence.weights == {"ndvi": 1.0}  # weights are rescaled over the layers in use
-    assert off.evidence.method == "black_tophat"  # set in the file, unused now
-    assert any("switched off: rgb" in n and "ndvi 1.00" in n for n in off.notes)
-
-
-def test_weights_are_relative_and_only_layers_in_use_need_a_method():
-    cfg = merge(load_config(PRETEST), {"evidence": {"rgb_weight": 1.0, "nir_weight": 1.0, "nir_method": "stretch", "ndvi_weight": 2.0}})
-    s = RunSettings.from_config(cfg)
-    assert s.evidence.weights == {"rgb": 0.25, "nir": 0.25, "ndvi": 0.5}
-    no_nir_method = load_config(PRETEST)
-    no_nir_method["evidence"]["nir_weight"] = 1.0
-    with pytest.raises(ConfigError, match=r"\[evidence\] nir_method"):
-        RunSettings.from_config(no_nir_method)
-    no_nir_method["input"]["use_nir"] = False  # off: its weight and missing method no longer matter
-    assert RunSettings.from_config(no_nir_method).evidence.weights == {"rgb": 1.0}
-
-
-def test_bad_layer_combinations_are_refused():
-    base = load_config(PRETEST)
-    none_on = merge(base, {"input": {"use_rgb": False, "use_nir": False, "use_ndvi": False}})
-    with pytest.raises(ConfigError, match=r"at least one input layer"):
-        RunSettings.from_config(none_on)
-    only_ndvi_without_weight = merge(base, {"input": {"use_rgb": False, "use_nir": False}})
-    with pytest.raises(ConfigError, match=r"every layer in use \(ndvi\) has weight 0"):
-        RunSettings.from_config(only_ndvi_without_weight)
-    nir_without_nir_band = merge(base, {"input": {"nir_bands": ["a", "red", "green"]},
-                                        "evidence": {"nir_weight": 1.0, "nir_method": "stretch"}})
-    with pytest.raises(ConfigError, match=r"band named 'nir'"):
-        RunSettings.from_config(nir_without_nir_band)
-    with pytest.raises(ConfigError, match=r">= 0"):
-        RunSettings.from_config(merge(base, {"evidence": {"ndvi_weight": -1.0}}))
-
-
-def test_ndvi_alone_needs_no_rgb_settings(tmp_path):
-    cfg = load_config(PRETEST)
-    for key in ("rgb", "rgb_bands", "nir", "nir_bands"):
-        del cfg["input"][key]
-    del cfg["evidence"]["method"], cfg["evidence"]["tophat_size_m"]
-    cfg = merge(cfg, {"evidence": {"ndvi_weight": 0.3}, "export": {"runs_dir": str(tmp_path / "area")}})
-    s = RunSettings.from_config(cfg)
-    assert s.input.layers == ("ndvi",) and s.input.rgb_bands is None and s.evidence.weights == {"ndvi": 1.0}
-    assert s.evidence.method is None and s.input.switched_off == ()
-    assert s.export.runs_dir == tmp_path / "area"
-
-
-def test_runs_dir_defaults_to_the_project_runs_folder():
-    assert RunSettings.from_config(load_config(PRETEST)).export.runs_dir == PROJECT_ROOT / "runs"
-
-
-def test_centroid_pretest_settings_build():
-    s = RunSettings.from_config(load_config(PRETEST))
-    assert s.input.rgb == PROJECT_ROOT / "dof" / "bordeaux" / "rgb.tif"
-    assert s.input.nir_bands == ("nir", "red", "green")
-    assert s.input.rgb_bands == ("red", "green", "blue")
-    assert (s.input.nodata_value, s.input.nodata_rule) == (255, "any_band")
-    assert s.spacing.values()[0] == 1.20
-    assert len(s.rotation.angles()) == 180
-    assert s.template.weights == (0.05, 0.20, 0.50, 0.20, 0.05)  # untouched defaults survive the merge
-
-
-def test_bad_weights_are_refused():
-    cfg = merge(load_config(PRETEST), {"template": {"weights": [0.10, 0.20, 0.50, 0.20, 0.10]}})
+def test_bad_values_are_refused_with_every_problem_listed():
     with pytest.raises(ConfigError, match="sum to"):
-        RunSettings.from_config(cfg)
-
-
-def test_seed_lines_must_be_template_lines():
-    cfg = merge(load_config(PRETEST), {"seeds": {"lines": [0, 3]}})
+        RunSettings.from_config(plugin_config(1.8, 2.2, {"template": {"weights": [0.1, 0.2, 0.5, 0.2, 0.1]}}))
     with pytest.raises(ConfigError, match="seeds"):
-        RunSettings.from_config(cfg)
-
-
-def test_bad_choice_is_refused():
-    cfg = merge(load_config(PRETEST), {"translation": {"box": "huge"}})
+        RunSettings.from_config(plugin_config(1.8, 2.2, {"seeds": {"lines": [0, 3]}}))
     with pytest.raises(ConfigError, match="choose one of"):
-        RunSettings.from_config(cfg)
+        RunSettings.from_config(plugin_config(1.8, 2.2, {"translation": {"box": "huge"}}))
+    with pytest.raises(ConfigError, match=r">= 0, and one of them > 0"):
+        RunSettings.from_config(plugin_config(1.8, 2.2, {"evidence": {"rgb_weight": 0.0, "nir_weight": 0.0, "ndvi_weight": 0.0}}))
+    broken = plugin_config(1.8, 2.2)
+    del broken["scoring"]["normalisation"], broken["centres"]["spacing_m"]
+    with pytest.raises(ConfigError) as exc:
+        RunSettings.from_config(broken)
+    assert "[scoring] normalisation" in str(exc.value) and "[centres] spacing_m" in str(exc.value)
 
 
-def test_later_override_wins(tmp_path):
-    a = tmp_path / "a.toml"
-    b = tmp_path / "b.toml"
-    a.write_text("[spacing]\nmin_m = 1.0\nmax_m = 1.5\nstep_m = 0.1\n")
-    b.write_text("[spacing]\nmax_m = 1.2\n")
-    cfg = load_config(a, b)
-    assert (cfg["spacing"]["min_m"], cfg["spacing"]["max_m"]) == (1.0, 1.2)
-    assert cfg["spacing"]["nominal_m"] == 2.0  # from default.toml
+def test_estimate_turns_hanging_row_deletion_on():
+    s = RunSettings.from_config(plugin_config(1.8, 2.2, {"reconstruction": {"drop_hanging_rows": False}}))
+    assert s.drop_hanging_rows and "drop_hanging_rows is turned on" in s.notes[0]
 
 
-def test_merge_does_not_modify_inputs():
+def test_merge_does_not_modify_inputs_and_defaults_are_fresh_copies():
     base = {"t": {"x": 1, "y": 2}}
-    merged = merge(base, {"t": {"y": 3}})
-    assert merged == {"t": {"x": 1, "y": 3}}
-    assert base == {"t": {"x": 1, "y": 2}}
-
-
-def test_variants_extend_the_pretest_config():
-    base = RunSettings.from_config(load_config(PRETEST))
-    cached = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest-cache.toml"))
-    full = RunSettings.from_config(load_config(CONFIG_DIR / "full-search.toml"))
-    assert base.centroid_pretest.enabled and base.kernels.cache_dir is None
-    assert cached.centroid_pretest.enabled and cached.kernels.cache_dir == PROJECT_ROOT / ".cache" / "kernels"
-    assert not full.centroid_pretest.enabled and full.kernels.cache_dir is None
-    # Everything else is inherited unchanged.
-    assert cached.input == base.input == full.input
-    assert cached.spacing == base.spacing == full.spacing
-    assert "extends" not in load_config(CONFIG_DIR / "centroid-pretest-cache.toml")
-
-
-def test_extends_chain_is_relative_to_the_file_and_cycles_are_refused(tmp_path):
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "a.toml").write_text("[spacing]\nmin_m = 1.0\nmax_m = 1.4\nstep_m = 0.2\n")
-    (tmp_path / "sub" / "b.toml").write_text('extends = "../a.toml"\n[spacing]\nmax_m = 1.2\n')
-    (tmp_path / "c.toml").write_text('extends = "sub/b.toml"\n[centres]\nspacing_m = 3.0\n')
-    cfg = load_config(tmp_path / "c.toml")
-    assert (cfg["spacing"]["min_m"], cfg["spacing"]["max_m"], cfg["centres"]["spacing_m"]) == (1.0, 1.2, 3.0)
-    (tmp_path / "x.toml").write_text('extends = "y.toml"\n')
-    (tmp_path / "y.toml").write_text('extends = "x.toml"\n')
-    with pytest.raises(ValueError, match="cycle"):
-        load_config(tmp_path / "x.toml")
+    assert merge(base, {"t": {"y": 3}}) == {"t": {"x": 1, "y": 3}} and base == {"t": {"x": 1, "y": 2}}
+    d = defaults()
+    d["spacing"]["min_m"] = 99
+    assert defaults()["spacing"]["min_m"] == 1.8

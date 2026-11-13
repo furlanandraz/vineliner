@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString
 
-from tools.config import CONFIG_DIR, ConfigError, RunSettings, load_config, merge
-from tools.reconstruction import RowSection, number_rows
-from tools.validation import mark_numbered
+from vineliner.core.config import ConfigError, RunSettings, plugin_config
+from vineliner.core.reconstruction import RowSection, number_rows
+from vineliner.core.validation import mark_numbered
 
 
 def section(i, coords):
@@ -72,9 +72,8 @@ def test_mark_numbered():
 
 
 def test_numbering_settings_and_config():
-    base = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest.toml")).row_numbering
-    assert (base.enabled, base.transect_interval_m) == (False, 10.0)
-    s = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest-cache-row-estimate-numbering.toml"))
-    assert s.row_numbering.enabled and s.missing_row_estimate.enabled and s.missing_row_estimate.merge_pieces
+    s = RunSettings.from_config(plugin_config(1.2, 1.6))
+    assert (s.row_numbering.enabled, s.row_numbering.transect_interval_m) == (True, 10.0)
+    assert s.missing_row_estimate.enabled and s.missing_row_estimate.merge_pieces
     with pytest.raises(ConfigError, match="row_numbering"):
-        RunSettings.from_config(merge(load_config(CONFIG_DIR / "centroid-pretest.toml"), {"row_numbering": {"transect_interval_m": 0}}))
+        RunSettings.from_config(plugin_config(1.2, 1.6, {"row_numbering": {"transect_interval_m": 0}}))

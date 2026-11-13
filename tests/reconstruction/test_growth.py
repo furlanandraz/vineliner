@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from shapely.geometry import box
 
-from tools.config.settings import ReconstructionSettings
-from tools.geo import axial_difference
-from tools.reconstruction import Endpoint, Grower, Row
+from vineliner.core.config.settings import ReconstructionSettings
+from vineliner.core.geo import axial_difference
+from vineliner.core.reconstruction import Endpoint, Grower, Row
 
 FIELD = box(0, 0, 50, 10)  # rows run east along y = 5
 

@@ -1,7 +1,7 @@
 # Vineliner — design brief for Claude Code
 
-Date: 2026-11-06, revised 2026-11-07 (see §17)  
-Status: agreed direction for an initial experiment. A first implementation of the full pipeline exists (2026-11-07, §13, §18); its results are experimental.  
+Date: 2026-11-06, revised 2026-11-07 and 2026-11-12 (see §17)  
+Status: agreed direction for an initial experiment. A first implementation of the full pipeline exists (2026-11-07, §13, §18); its results are experimental. Since 2026-11-12 it is a QGIS plugin (Processing algorithm *Detect vine rows*, §13, §17 items 42–49); the command line is gone.  
 Preferred language: Python.  
 Target imagery: Slovenian GURS orthophotos. First test data on hand: a 0.20 m Bordeaux RGB + NIR pair in `dof/bordeaux/` (§14). Second: the Cremons multispectral drone flight in `dof/cremons/` (§14, §19).
 
@@ -57,7 +57,7 @@ The first version expects a north-up analysis raster: an affine transform with n
 
 If RGB and NIR are combined, align them spatially and document the resampling and band mapping. GURS DOF050IR is a false-colour IR/R/G product, not an ordinary RGB file with a fourth NIR band. Do not infer band semantics solely from array position.
 
-**Implemented** (2026-11-12): `src/prepare_inputs.py` (`tools/io/warp.py`) reprojects any set of layers onto one north-up grid in a stated projected CRS and pixel size, with stated resampling (`average` by default). It writes the source, source CRS and pixel size, resampling and PROJ's datum transformation into each output's GeoTIFF tags, which every run's `report.json` repeats, and into `prepare.json`. The pipeline itself still refuses geographic CRSs and layers on different grids.
+**Implemented** (2026-11-12, plugin): the plugin puts the layers on one north-up analysis grid itself (`vineliner/qgis_io/rasters.py`, GDAL warp). The CRS is the one given, else the first layer's if projected in metres, else the project's, else WGS 84 / UTM. The pixel is the one given, else the coarsest layer's own but at least 1/13 of the middle row width. The extent is the polygons' plus a margin. A layer already on that grid is read with nearest neighbour (no resampling); finer layers are averaged, others resampled bilinearly. The run report records each layer's source, native pixel and resampling. The core still refuses layers on different grids, non-north-up grids and non-square pixels. (Before the plugin, `src/prepare_inputs.py` did this as a separate step.)
 
 ## 4. Vineyard polygons and block separation
 
@@ -96,7 +96,8 @@ Prefer retaining a continuous row-evidence raster V in [0,1] for scoring and dia
 - **NIR component** (`nir_weight`; the band named `nir` of the NIR layer; canopy brighter than the ground) and **NDVI component** (`ndvi_weight`; vines are greener than soil). Both use:
   - `white_tophat`: image − opening(image). Narrow bright features.
   - `stretch`: the image between two percentiles.
-- **Layers in use.** A layer is in use when its path is set and its `[input] use_*` switch is on. A switched-off or missing layer drops out and the other weights are rescaled. Only components with weight > 0 need a method.
+- **Layers in use.** Since the plugin (§17 item 45), the components are the layers the user selects: RGB, NIR-R-G (NIR, and NDVI computed from it) and NDVI. The weights are rescaled over those present.
+- **Combining** (`combine`, §17 item 48). By default each block uses the single component with the highest median template score at its centroid box and the 8 around it (`best_per_block`); `weighted` uses the weighted mean above.
 - **Scaling region** (`scale_region`, open): `per_block` scales each block on its own statistics; `all_blocks` uses one scale for every block.
 - Invalid pixels are replaced by the median valid value before filtering, so they cannot leak into neighbours, and V is 0 there.
 - The defaults (`rgb_weight = 1`, `nir_weight = ndvi_weight = 0`) are the RGB-only baseline. NDVI's contribution on Bordeaux is tested in §18, the layers on Cremons in §19.
@@ -468,42 +469,33 @@ Keep pipeline stages separable so filters and reconstruction choices can be comp
 
 ### Repository layout
 
-Revised 2026-11-07 (§17): `src/` holds only entry files. The importable code is the `tools/` package, nested one subpackage per pipeline stage, packaged with `pyproject.toml` (setuptools) and tested with pytest. Modules inside `tools/` import each other only with relative imports, so the package can later move into a QGIS plugin unchanged. Only `tools/io/` and `tools/export/` touch file formats.
+Revised 2026-11-12 (§17, items 42–48): the repository is a QGIS plugin. The command line, the per-area config files and the rasterio/GeoPandas file adapters are gone. `vineliner/` is the plugin folder QGIS loads, following the PyQGIS Developer Cookbook: `__init__.py` with `classFactory`, `metadata.txt`, a main plugin class that registers a Processing provider, and the provider with its algorithm. The method is `vineliner/core/` (the former `tools/`, moved unchanged where it could be): NumPy, SciPy and Shapely only, relative imports, no `qgis` or `osgeo` imports (a test checks this). `vineliner/qgis_io/` is the only bridge: it reads QGIS layers into arrays and polygons and writes results back.
 
-    vineliner/
-    ├── PROJECT.md                this design brief
-    ├── README.md                 setup, running, outputs, assumptions
-    ├── pyproject.toml            package metadata and dependencies
-    ├── configs/
-    │   ├── default.toml          agreed defaults (§12); OPEN keys left unset
-    │   ├── centroid-pretest.toml settings and first-run PICKs for the test data (§14, §18)
-    │   ├── centroid-pretest-cache.toml  extends it: kernel cache on
-    │   ├── full-search.toml      extends it: pre-test off (the baseline)
-    │   └── multispectral.toml    RGB + NIR + NDVI layers, Cremons drone data (§14, §19)
-    ├── dof/                      orthophoto inputs; *.tif is git-ignored, .gitkeep keeps the folder
-    │   ├── bordeaux/             first test pair (§14)
-    │   └── cremons/              prepared drone layers (§14)
-    ├── poly/poly.gpkg            hand-drawn Bordeaux blocks, standing in for classification (§4)
-    ├── poly/cremons.gpkg         the user's Cremons block, moved into the August mosaic's frame (§14)
-    ├── runs/                     run outputs, created at run time, git-ignored ([export] runs_dir)
-    ├── src/                      entry files only
-    │   ├── run_pipeline.py       run the pipeline for a config (--blocks, --layers, --plan)
-    │   ├── prepare_inputs.py     reproject layers onto one projected analysis grid (§3)
-    │   └── describe_inputs.py    print raster/polygon metadata
-    ├── tools/
-    │   ├── config/               loader.py, spacing.py, settings.py: load, merge, validate (§12)
-    │   ├── geo/                  grid.py (world <-> array, once), angles.py (§3, §6)
-    │   ├── io/                   raster.py (rasterio), vector.py (GeoPandas), warp.py (reprojection): file adapters
-    │   ├── imagery/              masks.py (valid mask, §14), evidence.py (V in [0,1], §5)
-    │   ├── vineyards/            blocks.py (polygons, masks), classify.py (not implemented) (§4)
-    │   ├── template/             geometry.py (§6), kernels.py (§6.1)
-    │   ├── search/               hypotheses.py, scoring.py, local.py, selection.py,
-    │   │                         persistence.py, storage.py (§7–9)
-    │   ├── reconstruction/       seeds.py, chains.py, growth.py, rows.py (§10)
-    │   ├── validation/           checks.py (§11)
-    │   ├── export/               layers.py, report.py, overlay.py, png.py (§13)
-    │   └── pipeline/             run.py: stages in order, intermediates saved
-    └── tests/                    mirrors tools/, plus an end-to-end synthetic run
+    vineliner/                        the repository
+    ├── PROJECT.md, README.md
+    ├── pyproject.toml                development environment for the core's tests (QGIS ignores it)
+    ├── vineliner/                    the plugin folder
+    │   ├── __init__.py               classFactory(iface)
+    │   ├── metadata.txt, icon.png
+    │   ├── plugin.py                 VinelinerPlugin: dependency check, provider, Raster menu entry, toolbar icon
+    │   ├── processing_provider/      provider.py (VinelinerProvider), detect_rows.py (DetectRowsAlgorithm)
+    │   ├── qgis_io/                  rasters.py (analysis grid, GDAL warp), vectors.py (polygons <-> Shapely)
+    │   └── core/
+    │       ├── defaults.toml         every setting: the final Bordeaux configuration (§18)
+    │       ├── config/               loader.py (defaults + dialog), spacing.py, settings.py (§12)
+    │       ├── geo/                  grid.py (world <-> array, once), angles.py (§3, §6)
+    │       ├── imagery/              masks.py, evidence.py (V in [0,1], §5)
+    │       ├── vineyards/            blocks.py (polygons, masks), classify.py (not implemented) (§4)
+    │       ├── template/             geometry.py (§6), kernels.py (§6.1), cache.py
+    │       ├── search/               hypotheses.py, scoring.py, local.py, selection.py, persistence.py, pretest.py (§7–9)
+    │       ├── reconstruction/       seeds, chains, growth, rows, smoothing, missing, squash, numbering (§10)
+    │       ├── validation/           checks.py, review.py (§11)
+    │       ├── export/               summary.py (needs_review, block statistics), polygons.py, report.py (§13)
+    │       └── pipeline/             inputs.py (layer rules, valid mask), run.py (the run, in memory)
+    ├── scripts/                      package_plugin.py (installable zip), link_plugin.py (development link)
+    ├── tests/                        mirrors core/; tests/qgis/ runs the algorithm inside QGIS (unittest)
+    ├── dof/                          local test imagery, git-ignored (§14)
+    └── poly/                         local vineyard polygons, git-ignored: poly.gpkg (Bordeaux blocks), cremons.gpkg (Cremons block)
 
 **Search implementation.**
 - For each spacing, every rotation, band and translation is packed into one sparse matrix over a fixed pixel window.
@@ -550,7 +542,7 @@ GURS states that JGP orthophoto downloads embed geolocation in the GeoTIFF heade
 
 Do not use the convenient outer rectangle of a crop as a substitute for the actual classified vineyard boundary in the completion tests.
 
-### Test imagery in the repository: `dof/bordeaux/`
+### Test imagery: `dof/bordeaux/` (local, git-ignored)
 
 The first test data is not GURS imagery. Its file headers and pixel statistics were inspected on 2026-11-07, without GDAL. Re-check these facts with Rasterio/GDAL once the dependencies are installed.
 
@@ -588,7 +580,7 @@ Observations and cautions:
   - It separates vegetation from soil clearly at scene scale, for example the grass verges. At full resolution it is smoother than the RGB: its pixel-to-pixel gradient relative to its contrast is half that of the red band. Rows show only faintly in some blocks.
 - **Blocks.** `poly/poly.gpkg` (supplied 2026-11-07) holds 7 hand-drawn blocks, 0.2–0.8 ha each and 3.2 ha in total, in the raster's own CRS. Its `id` field is empty, so blocks are numbered 0–6 in file order.
 
-### Drone data in the repository: `dof/cremons/` (2026-11-12)
+### Drone data: `dof/cremons/` (local, git-ignored; 2026-11-12)
 
 A DJI Terra 4.4 multispectral flight of 2025-08-22, `Cormons_20250822_MS`, supplied by the user as "Cremons". It covers one row-trained block in FVG, Italy, of about 84 m × 111 m. The provider was said to have no original RGB and NIR channels, but the delivered `map/` folder holds them. They were inspected with rasterio on 2026-11-12:
 
@@ -717,6 +709,18 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 39. **Run outputs per area** (user: Cremons runs in `runs/cremons/`). `[export] runs_dir`, default `runs`.
 40. **Cremons block from the user** (§14). The user's polygon was supplied in the June flight's local frame under an EPSG:4326 label. It was moved into the August mosaic's frame by the measured June-to-August shift. A provisional block drawn from the NIR before it arrived was discarded.
 41. **Config name.** The Cremons config is `configs/multispectral.toml`, named after what it sets (item 26): the three layers together. It extends `centroid-pretest-cache-row-estimate-numbering.toml` and replaces the inputs and area-specific picks.
+
+### 2026-11-12 (QGIS plugin)
+
+42. **A QGIS plugin, no command line** (user). The repository is reworked into a QGIS plugin following the PyQGIS Developer Cookbook (3.44): `vineliner/` with `classFactory`, `metadata.txt`, a main class that registers a Processing provider, and one algorithm, *Detect vine rows*. The user dropped the requirement that the method also run from the command line. `src/`, `configs/` and the rasterio/GeoPandas adapters are removed; items 35–41 now apply through the plugin's inputs instead of config keys.
+43. **The method stays independent of QGIS.** `vineliner/core/` (the former `tools/`) uses NumPy, SciPy and Shapely only and has no QGIS imports (tested). `qgis_io/` is the only bridge, and `core.pipeline.run()` works in memory. The core's tests run outside QGIS; a second set runs the algorithm inside QGIS. Curve fitting, tried the same day, was rejected after the visual check and is not part of it.
+44. **Settings: the final Bordeaux configuration, fixed** (user: "the final version of the Bordeaux config is the best possible option"). `core/defaults.toml` holds the PICKs of §18 with the centroid pre-test, kernel cache, missing-row estimate with squash and row numbering on. The dialog sets only the row width range: 21 widths across it, and the same range for the spacing check. The kernel cache lives in the QGIS profile.
+45. **Inputs: RGB, NIR-R-G, NDVI layers and vineyard polygons** (user). At least one raster layer. RGB alone gives RGB evidence; with NIR-R-G it also gives NIR and NDVI, computed as (NIR − red) / (NIR + red) from the NIR-R-G layer; NDVI alone gives NDVI. A supplied NDVI layer is used rather than a computed one. An NDVI layer whose values are mostly outside −1..1 is refused.
+46. **Outputs** (user). Row lines have exactly one attribute, `needs_review` (Boolean), the review flag of §11 including numbering uncertainty and estimated rows. The vineyard polygons keep their attributes and gain `average_row_length`, `average_row_direction` (azimuth from north, 0–180), `average_row_width` (mean of the rows' median spacings) and `confidence_interval` (half-width of the 95 % Student-t interval of that width). Rows interpolated without image support are left out of the width and its interval. The polygons keep a vertex at every row end (item 20).
+47. **Analysis grid chosen by the plugin** (§3). CRS, pixel size and extent as in §3's implementation note; the CRS and pixel are advanced parameters. The automatic pixel is at least 1/13 of the middle row width, so 1 cm drone mosaics become 0.2 m, which kept the Cremons search at about 150 million kernel weights.
+48. **Per-block choice of evidence, not a mix** (`[evidence] combine = "best_per_block"`, §5, §20). With RGB and NIR-R-G given, the user's rule is to use both and compute NDVI. An equal mix of the three found 94 of Bordeaux's 313 rows; even RGB 1 : NIR 0.25 : NDVI 0.25 found 274 with 138 for review. Mixing smears rows: RGB marks canopy and shadow dark, NIR the canopy bright. Instead every component is scored alone at the same 9 boxes (the centroid and the ring around it, a full search each), and the block uses the one with the highest median score. All layers still take part. On Bordeaux this chose NIR for 3 of 7 blocks and found 320 rows with 39 for review, more and fewer than RGB alone (313, 44); on Cremons it chose NDVI (16 rows, 1 for review). `combine = "weighted"` keeps the weighted mean.
+49. **Coordinates are transformed with GDAL's OSR, not QGIS** (2026-11-13). In QGIS 3.44.15 the cached `QgsCoordinateTransform` for a pair of CRSs can get stuck handing the coordinates back unchanged, in every thread, without an error, until QGIS restarts. Reproduced after map rendering once the Processing thread pool replaced an expired thread: EPSG:4326 → EPSG:32633 returned degrees as they were, which put a user's vineyard 0.001 m across on a 1 × 1 px grid on the second run of a session. GDAL's OSR gave the right result in that state, and GDAL warps the rasters anyway, so `qgis_io/transform.py` transforms the polygons, extents and pixel sizes with it (a test forbids `QgsCoordinateTransform` in the plugin). Layer access happens in `prepareAlgorithm` on the main thread; `processAlgorithm` on the worker thread needs only GDAL and the core. Implausible layers are refused before the run: a CRS that contradicts the coordinates (degrees read as metres or the reverse), pixels outside 1 mm to 50 m on the ground (such as a DJI local-frame map saved with WGS 84 attached), polygons narrower than a row width, and grids over 50 million pixels.
+50. **Test data stays out of the repository** (user, 2026-11-13). `dof/` (imagery) and `poly/` (vineyard polygons) are data, not code, and are git-ignored; the files are kept locally. The per-area configs went with the command line (item 42): the only settings file is `vineliner/core/defaults.toml`, which the plugin reads.
 
 ## 18. First Bordeaux results (2026-11-07)
 
@@ -1001,3 +1005,23 @@ All runs use `configs/multispectral.toml` on the user's block (3365 m², 833 cen
 - **The verge row** (row 15) is low confidence in every NIR-based run: about half of it lies under the tree verge.
 - **GNDVI** adds one spurious 12 m row beyond the left data edge (91% bridged, low confidence, flagged), and finds only 14 m of the verge row.
 - **Open.** The weights in `multispectral.toml` are equal first-run picks. NIR + NDVI or NDVI alone may be better choices; deciding needs reference rows (item 21).
+
+## 20. The plugin on Bordeaux and Cremons (2026-11-12)
+
+Runs through the Processing algorithm, headless in QGIS 3.44.15 (`runs/20261112-*-plugin-*`, GeoPackages and a JSON report each), with the packaged defaults (§17 item 44).
+
+| Data and layers | Combine | Rows | Length | Need review | Time |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Bordeaux, RGB (`…155043-plugin-bordeaux-rgb`) | – | 313 | 21.11 km | 44 | 100 s |
+| Bordeaux, RGB + NIR-R-G | equal weights | 94 | 6.58 km | 67 | 274 s |
+| Bordeaux, RGB + NIR-R-G | RGB 1, NIR 0.25, NDVI 0.25 | 274 | 17.98 km | 138 | 175 s |
+| Bordeaux, NIR-R-G (NIR + computed NDVI) | equal weights | 139 | 13.15 km | 37 | 161 s |
+| Bordeaux, RGB + NIR-R-G (`…161240-plugin-bordeaux-rgb-nrg`) | best per block | 320 | 21.64 km | 39 | 116 s |
+| Cremons, RGB + NIR-R-G + NDVI | equal weights | 17 | 1.34 km | 4 | 58 s |
+| Cremons, RGB + NIR-R-G + NDVI (`…161240-plugin-cremons-rgb-nrg-ndvi`) | best per block | 16 | 1.29 km | 1 | 49 s |
+
+- **Same rows as the command line.** Bordeaux RGB through the plugin gives the 313 rows of `20261112-120024-multispectral-check` with identical geometry. Three review flags differ, all at a threshold (support exactly 50 %, bridging and spacing at their limits): the older run also masked pixels where the unused NIR and NDVI files had NoData, which shifts evidence slightly.
+- **Bordeaux choices.** Blocks 1, 6 and 7 used NIR (median box scores 0.63 / 0.59 / 0.54 against RGB 0.61 / 0.47 / 0.46), the others RGB. NDVI never won: it scores 0.20–0.53, as soft as §14 found.
+- **Cremons.** NDVI 0.72, NIR 0.70, RGB 0.60; with NDVI the width is 2.584 ± 0.026 m (the equal mix gave 2.527 ± 0.107), matching the 2.57–2.64 m measured by hand (§14). The analysis CRS was set to EPSG:6708 to match §19; the grid became 0.2 m automatically from the 1 cm mosaics.
+- **Statistics.** Bordeaux widths are 1.37–1.50 m with 95 % intervals of ±0.004–0.031 m; directions agree with the pre-test (e.g. block 1: 49.3° from north = 40.7° from east).
+

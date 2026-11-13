@@ -3,8 +3,8 @@
 import numpy as np
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 
-from tools.export import insert_vertices
-from tools.reconstruction.rows import snap_to_boundary
+from vineliner.core.export import insert_vertices
+from vineliner.core.reconstruction.rows import snap_to_boundary
 
 
 def test_vertices_inserted_in_ring_order_and_shape_unchanged():

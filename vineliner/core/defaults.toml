@@ -1,0 +1,127 @@
+# Vineliner settings used by the QGIS plugin (PROJECT.md §12).
+#
+# The plugin dialog sets the row width range ([spacing] min_m / max_m, and the
+# [validation] range with it). Everything else is fixed here. The values are the
+# first-run picks validated on the Bordeaux test data (PROJECT.md §18), with the
+# centroid pre-test, kernel cache, missing-row estimate and row numbering on.
+# vineliner.core.config.RunSettings validates the merged result before every run.
+
+[evidence]                      # §5: row-evidence raster V in [0, 1], high = row
+# One component per input layer in use: RGB, NIR (from the NIR-R-G layer) and NDVI
+# (supplied, or computed from the NIR-R-G layer).
+combine = "best_per_block"      # each block uses the component that shows its rows best: the highest median
+                                # template score at the centroid box and the 8 around it. Mixing components
+                                # smears rows (RGB marks canopy + shadow dark, NIR the canopy bright): on
+                                # Bordeaux an equal mix found 94 of 313 rows, the per-block choice 320 (§19).
+                                # "weighted": the weighted mean below instead
+# Weights for "weighted": relative, rescaled over the components in use.
+rgb_weight = 1.0                # RGB component: gray from `bands`, rows darker than the ground
+method = "black_tophat"         # rows are thin dark lines; the top-hat removes soil-brightness patches
+bands = ["red", "green", "blue"]  # averaged to gray
+tophat_size_m = 1.4             # closing window side, about one Bordeaux row spacing
+nir_weight = 1.0                # NIR component: the NIR band, canopy brighter than the ground
+nir_method = "white_tophat"     # flattens broad bright patches (trees, verges) better than a stretch (§14 Cremons)
+nir_tophat_size_m = 1.4
+ndvi_weight = 1.0               # NDVI component: canopy greener than the ground
+ndvi_method = "white_tophat"    # grassed inter-rows are green too; the top-hat keeps only narrow rows
+ndvi_tophat_size_m = 1.4
+scale_percentile = 99.0         # top-hats: this percentile of the response maps to V = 1
+stretch_percentiles = [2.0, 98.0]  # stretches: lo/hi percentiles
+scale_region = "per_block"      # each block scaled on its own, so blocks don't depend on each other
+
+[template]                      # §6
+indices = [-2, -1, 0, 1, 2]     # outer left ... outer right
+weights = [0.05, 0.20, 0.50, 0.20, 0.05]  # must sum to 1.00
+line_length_m = 2.0             # longer than 1 m for a steadier 1-degree orientation estimate
+band_width_px = 3               # about the width of a row stripe in the evidence at 0.2 m
+
+[kernels]                       # §6.1
+coverage = "exact"              # exact fractional pixel coverage
+cache = true                    # kernels are saved in the QGIS profile and reused (saves ~20 s per run)
+
+[spacing]                       # §6-7: row width = distance between neighbouring rows (the tractor lane)
+# The dialog's row width range replaces min_m and max_m; nominal_m becomes their
+# middle and step_m a twentieth of the range (21 widths searched).
+nominal_m = 2.0
+min_m = 1.80
+max_m = 2.20
+step_m = 0.02
+
+[rotation]                      # §7: axial, 0..179 deg
+start_deg = 0
+stop_deg = 180                  # exclusive
+step_deg = 1
+
+[translation]                   # §7: the increment equals the analysis pixel size
+box = "nominal_d0"              # every width gets the same translations (tested_d pulled winners to the range edge)
+order = "centre_outward"
+
+[centres]                       # §7: centres on pixel centres of the analysis raster
+spacing_m = 2.0                 # dense: about 1.4 Bordeaux rows apart
+
+[centroid_pretest]              # §7: full search at each block's centroid narrows the grid search
+enabled = true
+theta_window_deg = 10.0
+spacing_window_frac = 0.10
+neighbour_rings = 3
+
+[scoring]                       # §8
+accept_min = 0.50               # overlap score, not a probability
+normalisation = "renormalise_valid"  # missing pixels are not read as soil
+min_valid_coverage = 0.5
+
+[selection]                     # §9: peak selection
+method = "orientation_consensus"  # a 2 m template separates neighbouring rotations weakly
+consensus_radius_m = 6.0
+consensus_window_deg = 5.0
+
+[seeds]                         # §10 step 2
+lines = [-1, 0, 1]              # centre and inner lines; outer lines carry only 0.05 weight
+min_band_mean = 0.4             # drops inner-line seeds on inter-row soil
+
+[reconstruction]                # §10
+growth_step_m = 1.0
+min_curvature_radius_m = 5.0
+link_angle_deg = 10.0
+link_lateral_frac = 0.25
+link_along_m = 4.0
+chain_smoothing_m = 4.0
+growth_min_score = 0.4          # growth only confirms a row it is already following
+max_gap_m = 50.0                # faint patches are bridged; bridged rows are flagged above [review] limits
+bridge_tangent_m = 10.0
+join_distance_frac = 0.35
+join_angle_deg = 20.0
+max_row_length_m = 1000.0       # safeguard only
+drop_hanging_rows = true        # keep only rows that meet their block boundary at both ends (the estimate needs it)
+
+[validation]                    # §11: final-geometry checks
+spacing_min_m = 1.80            # set to the dialog's row width range
+spacing_max_m = 2.20
+tolerance_m = 0.3               # boundary / containment tolerance
+sample_step_m = 1.0
+
+[review]                        # §11: when a row gets needs_review = true
+max_bridged_m = 15.0
+max_bridged_frac = 0.3
+max_spacing_out_frac = 0.25
+min_support_frac = 0.5
+min_length_m = 4.0
+
+[smoothing]                     # §10: maximum direction change between row vertices
+enabled = true
+max_turn_deg = 20.0
+
+[missing_row_estimate]          # §10: rows the image did not show, between rows too far apart
+enabled = true
+gap_tolerance_frac = 0.50
+whole_row_tolerance_frac = 0.20
+station_factor = 5.0
+max_missing_rows = 3
+merge_pieces = true             # squash detected hanging pieces into the estimated row they lie on
+merge_buffer_frac = 0.5
+merge_min_inside_frac = 0.8
+merge_max_angle_deg = 10.0
+
+[row_numbering]                 # §10: rows whose neighbours disagree on their number need review
+enabled = true
+transect_interval_m = 10.0

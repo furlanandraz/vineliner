@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString, Polygon, box
 
-from tools.geo import Grid
-from tools.reconstruction import Endpoint, Row, Seed, build_chains, finalise_rows, link_seeds, rows_from_chains, seeds_from_selection
-from tools.search import SearchSpace, Selection
+from vineliner.core.geo import Grid
+from vineliner.core.reconstruction import Endpoint, Row, Seed, build_chains, finalise_rows, link_seeds, rows_from_chains, seeds_from_selection
+from vineliner.core.search import SearchSpace, Selection
 
 
 def seed(i, x, y, theta=0.0, score=0.8):

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from tools.geo import Grid, across, along, axial_difference, axial_mean
+from vineliner.core.geo import Grid, across, along, axial_difference, axial_mean
 
 GRID = Grid(0.2, 0.0, 449350.5, 0.0, -0.2, 6426545.4, 2000, 2000)  # the Bordeaux grid
 

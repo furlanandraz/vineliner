@@ -2,32 +2,27 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# Development environment for the QGIS plugin in vineliner/. QGIS loads the
+# plugin folder directly and does not use this file; it is here so the core's
+# tests run outside QGIS (python -m pytest).
 [project]
 name = "vineliner"
-version = "0.1.0"
-description = "Reconstruct vineyard rows as georeferenced polylines from orthophotos."
+version = "0.2.0"  # keep equal to vineliner/metadata.txt and vineliner/core/__init__.py (checked by a test)
+description = "QGIS plugin: vineyard rows from aerial and drone imagery as lines."
 readme = "README.md"
-requires-python = ">=3.12"
-# Core (tools/ except io/ and export/): numpy, scipy, shapely.
-# File adapters (tools/io/): rasterio, geopandas, pyogrio, pyproj.
-# Versions are deliberately not pinned yet.
-dependencies = [
-    "numpy",
-    "scipy",
-    "shapely>=2",
-    "rasterio",
-    "geopandas",
-    "pyogrio",
-    "pyproj",
-]
+requires-python = ">=3.11"
+# The core needs only these; QGIS 3.40+ ships all three with its Python on Windows.
+dependencies = ["numpy", "scipy", "shapely>=2"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
 
-# Importable modules live in tools/; src/ holds only entry files.
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tools*"]
+include = ["vineliner*"]
+
+[tool.setuptools.package-data]
+"vineliner.core" = ["defaults.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

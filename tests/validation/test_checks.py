@@ -3,9 +3,9 @@
 import numpy as np
 from shapely.geometry import LineString, box
 
-from tools.config.settings import ReviewSettings, ValidationSettings
-from tools.reconstruction import RowSection
-from tools.validation import check_block, review_section
+from vineliner.core.config.settings import ReviewSettings, ValidationSettings
+from vineliner.core.reconstruction import RowSection
+from vineliner.core.validation import check_block, review_section
 
 POLY = box(0, 0, 20, 10)
 SETTINGS = ValidationSettings(spacing_min_m=1.2, spacing_max_m=1.6, tolerance_m=0.05, sample_step_m=1.0)
@@ -112,7 +112,7 @@ def test_attribute_names_fit_a_shapefile():
 
 
 def test_meets_boundary_twice():
-    from tools.validation import meets_boundary_twice, split_hanging
+    from vineliner.core.validation import meets_boundary_twice, split_hanging
 
     complete = LineString([(0, 5), (20, 5)])
     dangling = LineString([(0, 5), (12, 5)])

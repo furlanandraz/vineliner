@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from tools.imagery import combine, gray_response, ndvi_response, row_evidence, scale_response, valid_mask
+from vineliner.core.imagery import combine, gray_response, ndvi_response, row_evidence, scale_response, valid_mask
 
 
 def test_any_band_255_masks_the_pixel_in_every_file():
@@ -87,7 +87,7 @@ def test_unknown_rule_is_refused_even_without_nodata():
 
 
 def test_bright_response_keeps_bright_nir_rows():
-    from tools.imagery import bright_response
+    from vineliner.core.imagery import bright_response
 
     valid = np.ones((60, 60), bool)
     resp = bright_response(stripes(True) * 8.0, valid, "white_tophat", 0.2, 1.4, "nir")  # reflectance-like values
