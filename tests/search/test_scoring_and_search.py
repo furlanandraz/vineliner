@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 
 from synthetic import SYNTHETIC_PIXEL, SYNTHETIC_SPACING, SYNTHETIC_THETA, stripe_evidence, synthetic_grid
-from tools.config.settings import ScoringSettings
-from tools.search import LocalSearch, SearchSpace, base_score, score_hypothesis
-from tools.template import KernelBank, Template
+from vineliner.core.config.settings import ScoringSettings
+from vineliner.core.search import LocalSearch, SearchSpace, base_score, score_hypothesis
+from vineliner.core.template import KernelBank, Template
 
 W = (0.05, 0.20, 0.50, 0.20, 0.05)
 ALL = np.ones(5, bool)
@@ -30,14 +30,14 @@ def test_agreed_equal_totals():
     ],
 )
 def test_weights_of_lines_outside_are_mirrored(available, expected):
-    from tools.search import mirrored_weights
+    from vineliner.core.search import mirrored_weights
 
     w = mirrored_weights(W, np.array(available, bool))
     assert w / w.sum() == pytest.approx(expected)
 
 
 def test_equal_weights_lean_on_the_lines_inside():
-    from tools.search import mirrored_weights
+    from vineliner.core.search import mirrored_weights
 
     w = mirrored_weights([0.2] * 5, np.array([1, 1, 1, 0, 0], bool))
     assert w == pytest.approx([0.4, 0.4, 0.2, 0.0, 0.0])  # the centre line nearest the edge keeps only 0.2

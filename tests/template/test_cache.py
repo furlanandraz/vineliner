@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from tools.template import Template, cache_key, load_or_build
-from tools.template.cache import cache_path
+from vineliner.core.template import Template, cache_key, load_or_build
+from vineliner.core.template.cache import cache_path
 
 T = Template((-2, -1, 0, 1, 2), (0.05, 0.20, 0.50, 0.20, 0.05), 2.0, 0.6)
 THETAS = (0.0, 30.0, 45.0, 117.0)

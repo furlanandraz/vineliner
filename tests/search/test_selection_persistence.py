@@ -1,15 +1,12 @@
-"""Peak selection, persistence diagnostics and score storage, on hand-made search results."""
+"""Peak selection and persistence diagnostics, on hand-made search results."""
 
-import json
 
 import numpy as np
 import pytest
 
-from tools.search import (
+from vineliner.core.search import (
     RIDGE_FIELDS,
     CentreResults,
-    SearchSpace,
-    SurfaceStore,
     competing_orientations,
     ridge_statistics,
     select_best,
@@ -104,46 +101,3 @@ def test_competing_orientations():
     wrap[40], wrap[179], wrap[0] = 0.9, 0.7, 0.65  # 179 and 0 are neighbours
     assert competing_orientations(wrap, THETAS, 40, 0.5)[1] == 179.0
 
-
-# -- storage -------------------------------------------------------------------------
-
-SPACE = SearchSpace((0.0, 90.0), (1.4, 1.5), 0.2, 0.2, "nominal_d0", 1.4)
-
-
-def surfaces(c):
-    rng = np.random.default_rng(0)
-    return {j: rng.random((c, 2, 7, 7)).astype(np.float32) for j in range(2)}
-
-
-def test_storage_all_keeps_every_spacing(tmp_path):
-    store = SurfaceStore(tmp_path / "scores", SPACE, "all")
-    store.sink(5, np.array([10, 11, 12]))(0, slice(0, 3), surfaces(3), np.array([0, 1, 0]), np.array([0, 1]))
-    store.write_manifest()
-    with np.load(tmp_path / "scores" / "block_005_batch_0000.npz") as f:
-        assert sorted(f.files) == ["S_00", "S_01", "centre_ids", "theta_idx"]
-        assert f["S_00"].shape == (3, 2, 7, 7) and list(f["centre_ids"]) == [10, 11, 12]
-    manifest = json.loads((tmp_path / "scores" / "manifest.json").read_text())
-    assert manifest["mode"] == "all" and manifest["files"] == ["block_005_batch_0000.npz"]
-    assert manifest["offsets"]["00"]["ox"] == list(range(-3, 4))
-
-
-def test_storage_winning_spacing_keeps_only_each_centres_winner(tmp_path):
-    store = SurfaceStore(tmp_path, SPACE, "winning_spacing")
-    s = surfaces(3)
-    store.sink(0, np.array([10, 11, 12]))(0, slice(0, 3), s, np.array([0, 1, 0]))
-    with np.load(tmp_path / "block_000_batch_0000.npz") as f:
-        assert list(f["centre_ids_00"]) == [10, 12] and list(f["centre_ids_01"]) == [11]
-        assert np.array_equal(f["S_01"], s[1][[1]])
-
-
-def test_storage_none_writes_nothing(tmp_path):
-    store = SurfaceStore(tmp_path / "scores", SPACE, "none")
-    store.sink(0, np.array([1]))(0, slice(0, 1), surfaces(1), np.array([0]))
-    store.write_manifest()
-    assert not (tmp_path / "scores").exists() and store.estimate_bytes(10) == 0
-
-
-def test_storage_size_estimate():
-    full = SurfaceStore(".", SPACE, "all").estimate_bytes(10)
-    assert full == 10 * (2 * 49 + 2 * 49) * 4
-    assert SurfaceStore(".", SPACE, "winning_spacing").estimate_bytes(10) == full // 2

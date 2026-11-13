@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString, box
 
-from tools.config import CONFIG_DIR, ConfigError, RunSettings, load_config, merge
-from tools.reconstruction import RowSection, assign_pieces, squash_pieces, turn_angles
-from tools.validation import mark_estimated, meets_boundary_twice
+from vineliner.core.config import ConfigError, RunSettings, plugin_config
+from vineliner.core.reconstruction import RowSection, assign_pieces, squash_pieces, turn_angles
+from vineliner.core.validation import mark_estimated, meets_boundary_twice
 
 FIELD = box(0, 0, 30, 10)
 WIDTH = 1.5
@@ -75,8 +75,8 @@ def test_merged_rows_are_labelled_by_their_detected_share():
 
 
 def test_squash_settings():
-    m = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest-cache-row-estimate.toml")).missing_row_estimate
+    m = RunSettings.from_config(plugin_config(1.2, 1.6)).missing_row_estimate
     assert (m.merge_pieces, m.merge_buffer_frac, m.merge_min_inside_frac, m.merge_max_angle_deg) == (True, 0.5, 0.8, 10.0)
-    bad = merge(load_config(CONFIG_DIR / "centroid-pretest.toml"), {"missing_row_estimate": {"merge_buffer_frac": 1.5}})
+    bad = plugin_config(1.2, 1.6, {"missing_row_estimate": {"merge_buffer_frac": 1.5}})
     with pytest.raises(ConfigError, match="merge_buffer_frac"):
         RunSettings.from_config(bad)

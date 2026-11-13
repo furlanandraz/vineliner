@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from shapely.geometry import box
 
-from tools.config import CONFIG_DIR, ConfigError, RunSettings, load_config, merge
-from tools.config.settings import ReconstructionSettings
-from tools.reconstruction import Grower, Row, clean_line, limit_turns, turn_angles
+from vineliner.core.config import ConfigError, RunSettings, plugin_config
+from vineliner.core.config.settings import ReconstructionSettings
+from vineliner.core.reconstruction import Grower, Row, clean_line, limit_turns, turn_angles
 
 
 def test_turn_angles():
@@ -80,7 +80,7 @@ def test_join_does_not_step_back():
 
 
 def test_smoothing_settings():
-    s = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest.toml")).smoothing
+    s = RunSettings.from_config(plugin_config(1.2, 1.6)).smoothing
     assert (s.enabled, s.max_turn_deg) == (True, 20.0)
     with pytest.raises(ConfigError, match="smoothing"):
-        RunSettings.from_config(merge(load_config(CONFIG_DIR / "centroid-pretest.toml"), {"smoothing": {"max_turn_deg": 0.0}}))
+        RunSettings.from_config(plugin_config(1.2, 1.6, {"smoothing": {"max_turn_deg": 0.0}}))

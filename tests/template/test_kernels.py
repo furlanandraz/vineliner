@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import shapely
 
-from tools.template import KernelBank, Template, rasterise_band
+from vineliner.core.template import KernelBank, Template, rasterise_band
 
 T = Template((-2, -1, 0, 1, 2), (0.05, 0.20, 0.50, 0.20, 0.05), line_length_m=2.0, band_width_m=0.2)
 P = 0.2

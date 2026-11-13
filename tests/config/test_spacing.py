@@ -2,22 +2,22 @@
 
 import pytest
 
-from tools.config import CONFIG_DIR, SpacingRange, load_config
-
-PRETEST = CONFIG_DIR / "centroid-pretest.toml"
+from vineliner.core.config import SpacingRange, defaults, plugin_config
 
 
 def test_default_spacing_range():
-    spacings = SpacingRange.from_config(load_config()).values()
+    spacings = SpacingRange.from_config(defaults()).values()
     assert len(spacings) == 21
     assert spacings[0] == 1.80
     assert spacings[3] == 1.86  # rounded, no float noise
     assert spacings[-1] == 2.20  # both ends searched
 
 
-def test_test_data_spacing_range():
-    spacings = SpacingRange.from_config(load_config(PRETEST)).values()
+def test_dialog_range_spacings():
+    spacings = SpacingRange.from_config(plugin_config(1.2, 1.6)).values()
     assert (spacings[0], spacings[-1], len(spacings)) == (1.20, 1.60, 21)
+    spacings = SpacingRange.from_config(plugin_config(2.4, 2.8)).values()  # Cremons
+    assert (spacings[0], spacings[1], spacings[-1]) == (2.40, 2.42, 2.80)
 
 
 def test_single_spacing():

@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString, Point, box
 
-from tools.config import CONFIG_DIR, ConfigError, RunSettings, load_config, merge
-from tools.config.settings import ValidationSettings
-from tools.reconstruction import RowSection, fill_gaps, find_gaps, interpolate_rows, row_width
-from tools.validation import check_block, mark_estimated, meets_boundary_twice
+from vineliner.core.config import ConfigError, RunSettings, plugin_config
+from vineliner.core.config.settings import ValidationSettings
+from vineliner.core.reconstruction import RowSection, fill_gaps, find_gaps, interpolate_rows, row_width
+from vineliner.core.validation import check_block, mark_estimated, meets_boundary_twice
 
 FIELD = box(0, 0, 30, 10)
 CHECK = ValidationSettings(spacing_min_m=1.3, spacing_max_m=1.7, tolerance_m=0.1, sample_step_m=1.0)
@@ -116,30 +116,22 @@ def test_mark_estimated():
 
 
 def test_estimate_turns_hanging_row_deletion_on():
-    cfg = merge(load_config(CONFIG_DIR / "centroid-pretest.toml"), {"missing_row_estimate": {"enabled": True}})
-    s = RunSettings.from_config(cfg)
-    assert s.missing_row_estimate.enabled and s.export.drop_hanging_rows
+    s = RunSettings.from_config(plugin_config(1.2, 1.6, {"reconstruction": {"drop_hanging_rows": False}}))
+    assert s.missing_row_estimate.enabled and s.drop_hanging_rows
     assert len(s.notes) == 1 and "drop_hanging_rows" in s.notes[0]
-    off = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest.toml"))
-    assert not off.export.drop_hanging_rows and off.notes == ()
-
-
-def test_row_estimate_config_file():
-    s = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest-cache-row-estimate.toml"))
-    assert s.missing_row_estimate.enabled and s.export.drop_hanging_rows and s.notes == ()  # set explicitly there
-    assert s.centroid_pretest.enabled and s.kernels.cache_dir is not None
-    m = s.missing_row_estimate
-    assert (m.gap_tolerance_frac, m.whole_row_tolerance_frac, m.station_factor, m.max_missing_rows) == (0.50, 0.20, 5.0, 3)
+    off = RunSettings.from_config(plugin_config(1.2, 1.6, {
+        "missing_row_estimate": {"enabled": False}, "reconstruction": {"drop_hanging_rows": False}}))
+    assert not off.drop_hanging_rows and off.notes == ()
 
 
 def test_estimate_defaults():
-    m = RunSettings.from_config(load_config(CONFIG_DIR / "centroid-pretest.toml")).missing_row_estimate
-    assert (m.enabled, m.gap_tolerance_frac, m.whole_row_tolerance_frac, m.station_factor, m.max_missing_rows) == (False, 0.50, 0.20, 5.0, 3)
+    m = RunSettings.from_config(plugin_config(1.2, 1.6)).missing_row_estimate
+    assert (m.enabled, m.gap_tolerance_frac, m.whole_row_tolerance_frac, m.station_factor, m.max_missing_rows) == (True, 0.50, 0.20, 5.0, 3)
 
 
 @pytest.mark.parametrize("bad", [{"gap_tolerance_frac": 1.5}, {"gap_tolerance_frac": 0.0}, {"whole_row_tolerance_frac": 0.6},
                                  {"station_factor": 0.0}, {"max_missing_rows": 0}])
 def test_bad_estimate_settings_are_refused(bad):
-    cfg = merge(load_config(CONFIG_DIR / "centroid-pretest.toml"), {"missing_row_estimate": {"enabled": True, **bad}})
+    cfg = plugin_config(1.2, 1.6, {"missing_row_estimate": {"enabled": True, **bad}})
     with pytest.raises(ConfigError, match="missing_row_estimate"):
         RunSettings.from_config(cfg)

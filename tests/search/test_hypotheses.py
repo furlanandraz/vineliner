@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from shapely.geometry import box
 
-from tools.geo import Grid
-from tools.search import SearchSpace, centre_outward_order, search_centres, translation_offsets
+from vineliner.core.geo import Grid
+from vineliner.core.search import SearchSpace, centre_outward_order, search_centres, translation_offsets
 
 
 @pytest.mark.parametrize(

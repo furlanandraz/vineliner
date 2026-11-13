@@ -7,9 +7,9 @@ import pytest
 from shapely.geometry import Polygon, box
 
 from synthetic import SYNTHETIC_PIXEL, SYNTHETIC_SPACING, SYNTHETIC_THETA, stripe_evidence, synthetic_grid
-from tools.config.settings import ScoringSettings
-from tools.search import LocalSearch, SearchSpace, ring_offsets, run_pretest
-from tools.template import KernelBank, Template
+from vineliner.core.config.settings import ScoringSettings
+from vineliner.core.search import LocalSearch, SearchSpace, ring_offsets, run_pretest
+from vineliner.core.template import KernelBank, Template
 
 W = (0.05, 0.20, 0.50, 0.20, 0.05)
 

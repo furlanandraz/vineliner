@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from tools.geo import Grid, across
+from vineliner.core.geo import Grid, across
 
 
 SYNTHETIC_THETA = 30.0

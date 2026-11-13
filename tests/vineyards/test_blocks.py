@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon, box
 
-from tools.geo import Grid
-from tools.vineyards import block_mask, classify_blocks, make_blocks, pixel_window
+from vineliner.core.geo import Grid
+from vineliner.core.vineyards import block_mask, classify_blocks, make_blocks, pixel_window
 
 GRID = Grid(1.0, 0, 0.0, 0, -1.0, 10.0, 10, 10)  # 1 m pixels; pixel (r, c) has its centre at (c + 0.5, 9.5 - r)
 
