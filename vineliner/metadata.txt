@@ -1,0 +1,21 @@
+[general]
+name=Vineliner
+qgisMinimumVersion=3.40
+description=Finds vineyard rows in aerial or drone imagery and draws each row as a line.
+about=Vineliner searches each vineyard polygon for parallel rows with a weighted five-line template over every rotation, row width and position, then grows, joins and checks the rows.
+    Inputs: an RGB layer, a false-colour NIR-R-G layer and/or an NDVI layer (at least one; with NIR-R-G, NDVI is computed when no NDVI layer is given), the vineyard polygons, and the range of row widths to search.
+    Outputs: the rows as lines with one attribute, needs_review, and the vineyard polygons with average row length, direction and width and a 95-percent confidence interval of the width.
+    Requires NumPy, SciPy and Shapely 2 in QGIS's Python (included with QGIS 3.40 and later on Windows).
+version=0.2.0
+author=furlanandraz
+email=REPLACE_WITH_CONTACT_EMAIL
+repository=https://github.com/furlanandraz/vineliner
+tracker=https://github.com/furlanandraz/vineliner/issues
+homepage=https://github.com/furlanandraz/vineliner
+category=Raster
+icon=icon.png
+tags=vineyard, viticulture, vine rows, orthophoto, drone, multispectral, NDVI, row detection, processing
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+changelog=0.2.0 First plugin version: Processing algorithm Detect vine rows.
