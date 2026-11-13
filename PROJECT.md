@@ -494,8 +494,8 @@ Revised 2026-11-12 (§17, items 42–48): the repository is a QGIS plugin. The c
     │       └── pipeline/             inputs.py (layer rules, valid mask), run.py (the run, in memory)
     ├── scripts/                      package_plugin.py (installable zip), link_plugin.py (development link)
     ├── tests/                        mirrors core/; tests/qgis/ runs the algorithm inside QGIS (unittest)
-    ├── dof/                          test imagery; *.tif is git-ignored (§14)
-    └── poly/                         poly.gpkg (Bordeaux blocks), cremons.gpkg (Cremons block)
+    ├── dof/                          local test imagery, git-ignored (§14)
+    └── poly/                         local vineyard polygons, git-ignored: poly.gpkg (Bordeaux blocks), cremons.gpkg (Cremons block)
 
 **Search implementation.**
 - For each spacing, every rotation, band and translation is packed into one sparse matrix over a fixed pixel window.
@@ -542,7 +542,7 @@ GURS states that JGP orthophoto downloads embed geolocation in the GeoTIFF heade
 
 Do not use the convenient outer rectangle of a crop as a substitute for the actual classified vineyard boundary in the completion tests.
 
-### Test imagery in the repository: `dof/bordeaux/`
+### Test imagery: `dof/bordeaux/` (local, git-ignored)
 
 The first test data is not GURS imagery. Its file headers and pixel statistics were inspected on 2026-11-07, without GDAL. Re-check these facts with Rasterio/GDAL once the dependencies are installed.
 
@@ -580,7 +580,7 @@ Observations and cautions:
   - It separates vegetation from soil clearly at scene scale, for example the grass verges. At full resolution it is smoother than the RGB: its pixel-to-pixel gradient relative to its contrast is half that of the red band. Rows show only faintly in some blocks.
 - **Blocks.** `poly/poly.gpkg` (supplied 2026-11-07) holds 7 hand-drawn blocks, 0.2–0.8 ha each and 3.2 ha in total, in the raster's own CRS. Its `id` field is empty, so blocks are numbered 0–6 in file order.
 
-### Drone data in the repository: `dof/cremons/` (2026-11-12)
+### Drone data: `dof/cremons/` (local, git-ignored; 2026-11-12)
 
 A DJI Terra 4.4 multispectral flight of 2025-08-22, `Cormons_20250822_MS`, supplied by the user as "Cremons". It covers one row-trained block in FVG, Italy, of about 84 m × 111 m. The provider was said to have no original RGB and NIR channels, but the delivered `map/` folder holds them. They were inspected with rasterio on 2026-11-12:
 
@@ -720,6 +720,7 @@ Access routes were checked on 2026-11-06. Recheck current product availability a
 47. **Analysis grid chosen by the plugin** (§3). CRS, pixel size and extent as in §3's implementation note; the CRS and pixel are advanced parameters. The automatic pixel is at least 1/13 of the middle row width, so 1 cm drone mosaics become 0.2 m, which kept the Cremons search at about 150 million kernel weights.
 48. **Per-block choice of evidence, not a mix** (`[evidence] combine = "best_per_block"`, §5, §20). With RGB and NIR-R-G given, the user's rule is to use both and compute NDVI. An equal mix of the three found 94 of Bordeaux's 313 rows; even RGB 1 : NIR 0.25 : NDVI 0.25 found 274 with 138 for review. Mixing smears rows: RGB marks canopy and shadow dark, NIR the canopy bright. Instead every component is scored alone at the same 9 boxes (the centroid and the ring around it, a full search each), and the block uses the one with the highest median score. All layers still take part. On Bordeaux this chose NIR for 3 of 7 blocks and found 320 rows with 39 for review, more and fewer than RGB alone (313, 44); on Cremons it chose NDVI (16 rows, 1 for review). `combine = "weighted"` keeps the weighted mean.
 49. **Coordinates are transformed with GDAL's OSR, not QGIS** (2026-11-13). In QGIS 3.44.15 the cached `QgsCoordinateTransform` for a pair of CRSs can get stuck handing the coordinates back unchanged, in every thread, without an error, until QGIS restarts. Reproduced after map rendering once the Processing thread pool replaced an expired thread: EPSG:4326 → EPSG:32633 returned degrees as they were, which put a user's vineyard 0.001 m across on a 1 × 1 px grid on the second run of a session. GDAL's OSR gave the right result in that state, and GDAL warps the rasters anyway, so `qgis_io/transform.py` transforms the polygons, extents and pixel sizes with it (a test forbids `QgsCoordinateTransform` in the plugin). Layer access happens in `prepareAlgorithm` on the main thread; `processAlgorithm` on the worker thread needs only GDAL and the core. Implausible layers are refused before the run: a CRS that contradicts the coordinates (degrees read as metres or the reverse), pixels outside 1 mm to 50 m on the ground (such as a DJI local-frame map saved with WGS 84 attached), polygons narrower than a row width, and grids over 50 million pixels.
+50. **Test data stays out of the repository** (user, 2026-11-13). `dof/` (imagery) and `poly/` (vineyard polygons) are data, not code, and are git-ignored; the files are kept locally. The per-area configs went with the command line (item 42): the only settings file is `vineliner/core/defaults.toml`, which the plugin reads.
 
 ## 18. First Bordeaux results (2026-11-07)
 

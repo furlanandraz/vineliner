@@ -2,7 +2,10 @@
 # Vineliner
 # ---------------------------------------------------------------------------
 
-# Orthophoto imagery is large and not versioned. dof/.gitkeep keeps the folder.
+# Test data is data, not code, and stays local: imagery (dof/) and vineyard
+# polygons (poly/). Imagery anywhere else is not versioned either.
+/dof/
+/poly/
 *.tif
 *.tiff
 
@@ -11,8 +14,6 @@
 *.aux.xml
 *.tfw
 *.ovr
-# Provenance the former src/prepare_inputs.py wrote next to prepared imagery (local source paths).
-dof/*/prepare.json
 
 # GeoPackage lock/journal files created while a layer is open in QGIS.
 *.gpkg-wal

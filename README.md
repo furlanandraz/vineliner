@@ -114,15 +114,17 @@ vineliner/                    the plugin folder QGIS loads
     config/ geo/ imagery/ vineyards/ template/ search/ reconstruction/ validation/ export/ pipeline/
 scripts/                      package_plugin.py (zip), link_plugin.py (development link)
 tests/                        mirrors core/; tests/qgis/ for the plugin inside QGIS
-dof/, poly/                   test imagery (git-ignored) and vineyard polygons
+dof/, poly/                   local test data: imagery and vineyard polygons (git-ignored)
 ```
 
 `core/` is independent of QGIS: `qgis_io/` turns layers into NumPy arrays and Shapely polygons, `core.pipeline.run()` returns rows and statistics in memory, and the algorithm writes them to the output layers. A test checks that nothing in `core/` imports `qgis` or `osgeo`.
 
 ## Test data
 
-- **Bordeaux** (`dof/bordeaux/`, git-ignored): a 0.20 m RGB orthophoto (`rgb.tif`) and a false-colour NIR, red, green one (`nir.tif`) on the same grid, with 7 hand-drawn blocks in [poly/poly.gpkg](poly/poly.gpkg). Rows are about 1.4 m apart: use a row width range of 1.2–1.6 m. PROJECT.md §14 has the details and assumptions.
-- **Cremons** (DJI Terra flight of 2025-08-22, outside the repository): `map/result.tif` (RGB), `result_NIR.tif`, `result_Red.tif` and `result_Green.tif` (stack them as NIR-R-G, see above), and `index_map/NDVI.tif`, all EPSG:4326 at about 1 cm. The block is in [poly/cremons.gpkg](poly/cremons.gpkg) (EPSG:6708). Use a row width range of 2.4–2.8 m and, to match earlier results, the analysis CRS EPSG:6708 (RDN2008 / UTM zone 33N). PROJECT.md §14 and §19 have the details.
+The test data is not in the repository: `dof/` (imagery) and `poly/` (vineyard polygons) are git-ignored and kept locally.
+
+- **Bordeaux** (`dof/bordeaux/`, git-ignored): a 0.20 m RGB orthophoto (`rgb.tif`) and a false-colour NIR, red, green one (`nir.tif`) on the same grid, with 7 hand-drawn blocks in `poly/poly.gpkg`. Rows are about 1.4 m apart: use a row width range of 1.2–1.6 m. PROJECT.md §14 has the details and assumptions.
+- **Cremons** (DJI Terra flight of 2025-08-22, outside the repository): `map/result.tif` (RGB), `result_NIR.tif`, `result_Red.tif` and `result_Green.tif` (stack them as NIR-R-G, see above), and `index_map/NDVI.tif`, all EPSG:4326 at about 1 cm. The block is in `poly/cremons.gpkg` (EPSG:6708). Use a row width range of 2.4–2.8 m and, to match earlier results, the analysis CRS EPSG:6708 (RDN2008 / UTM zone 33N). PROJECT.md §14 and §19 have the details.
 
 ## Contact
 

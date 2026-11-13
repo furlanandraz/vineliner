@@ -1,9 +1,9 @@
 """Automatic vineyard classification (PROJECT.md §4): not implemented yet.
 
-The method is an open choice (PROJECT.md §15). Until one is chosen, runs take
-block polygons from a file ([vineyards] source), such as the hand-drawn
-poly/poly.gpkg. Those are test fixtures, not classification results, and
-reports must say so.
+The method is an open choice (PROJECT.md §15). Until one is chosen, the user
+supplies the vineyard polygons as a layer (the algorithm's Vineyard polygons
+input), such as the hand-drawn Bordeaux blocks. Those are test fixtures, not
+classification results, and reports must say so.
 """
 
 from __future__ import annotations
