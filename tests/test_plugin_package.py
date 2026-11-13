@@ -60,6 +60,6 @@ def test_zip_holds_one_plugin_folder_without_caches(tmp_path):
     names = zipfile.ZipFile(path).namelist()
     assert all(n.startswith("vineliner/") for n in names)
     for required in ("vineliner/__init__.py", "vineliner/metadata.txt", "vineliner/icon.png", "vineliner/core/defaults.toml",
-                     "vineliner/processing_provider/detect_rows.py", "vineliner/qgis_io/rasters.py"):
+                     "vineliner/processing_provider/detect_rows.py", "vineliner/qgis_io/rasters.py", "vineliner/LICENSE"):
         assert required in names, required
     assert not [n for n in names if "__pycache__" in n or n.endswith(".pyc")]

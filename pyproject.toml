@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # 77: SPDX licence expressions (PEP 639)
 build-backend = "setuptools.build_meta"
 
 # Development environment for the QGIS plugin in vineliner/. QGIS loads the
@@ -10,6 +10,8 @@ name = "vineliner"
 version = "0.2.0"  # keep equal to vineliner/metadata.txt and vineliner/core/__init__.py (checked by a test)
 description = "QGIS plugin: vineyard rows from aerial and drone imagery as lines."
 readme = "README.md"
+license = "GPL-2.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # The core needs only these; QGIS 3.40+ ships all three with its Python on Windows.
 dependencies = ["numpy", "scipy", "shapely>=2"]

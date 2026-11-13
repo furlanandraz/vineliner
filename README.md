@@ -129,3 +129,7 @@ The test data is not in the repository: `dof/` (imagery) and `poly/` (vineyard p
 ## Contact
 
 Questions, bug reports and data to try: open an issue at [github.com/furlanandraz/vineliner/issues](https://github.com/furlanandraz/vineliner/issues), or write to [info@furlanandraz.com](mailto:info@furlanandraz.com).
+
+## Licence
+
+GNU General Public License, version 2 or (at your option) any later version, the licence of QGIS itself: see [LICENSE](LICENSE). Copyright (C) 2026 furlanandraz.
