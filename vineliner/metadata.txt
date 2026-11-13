@@ -8,7 +8,7 @@ about=Vineliner searches each vineyard polygon for parallel rows with a weighted
     Requires NumPy, SciPy and Shapely 2 in QGIS's Python (included with QGIS 3.40 and later on Windows).
 version=0.2.0
 author=furlanandraz
-email=REPLACE_WITH_CONTACT_EMAIL
+email=info@furlanandraz.com
 repository=https://github.com/furlanandraz/vineliner
 tracker=https://github.com/furlanandraz/vineliner/issues
 homepage=https://github.com/furlanandraz/vineliner

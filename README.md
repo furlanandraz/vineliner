@@ -123,3 +123,7 @@ dof/, poly/                   test imagery (git-ignored) and vineyard polygons
 
 - **Bordeaux** (`dof/bordeaux/`, git-ignored): a 0.20 m RGB orthophoto (`rgb.tif`) and a false-colour NIR, red, green one (`nir.tif`) on the same grid, with 7 hand-drawn blocks in [poly/poly.gpkg](poly/poly.gpkg). Rows are about 1.4 m apart: use a row width range of 1.2–1.6 m. PROJECT.md §14 has the details and assumptions.
 - **Cremons** (DJI Terra flight of 2025-08-22, outside the repository): `map/result.tif` (RGB), `result_NIR.tif`, `result_Red.tif` and `result_Green.tif` (stack them as NIR-R-G, see above), and `index_map/NDVI.tif`, all EPSG:4326 at about 1 cm. The block is in [poly/cremons.gpkg](poly/cremons.gpkg) (EPSG:6708). Use a row width range of 2.4–2.8 m and, to match earlier results, the analysis CRS EPSG:6708 (RDN2008 / UTM zone 33N). PROJECT.md §14 and §19 have the details.
+
+## Contact
+
+Questions, bug reports and data to try: open an issue at [github.com/furlanandraz/vineliner/issues](https://github.com/furlanandraz/vineliner/issues), or write to [info@furlanandraz.com](mailto:info@furlanandraz.com).
